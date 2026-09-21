@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>BinsApp OTP Security Summary</title>
+  <style>
+    @page { margin: 2cm; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      color: #1a1a1a;
+      line-height: 1.5;
+      font-size: 11pt;
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+    h1 {
+      font-size: 22pt;
+      border-bottom: 2px solid #2563eb;
+      padding-bottom: 8px;
+      margin-bottom: 4px;
+    }
+    .subtitle { color: #666; font-size: 10pt; margin-bottom: 24px; }
+    h2 {
+      font-size: 14pt;
+      color: #2563eb;
+      margin-top: 28px;
+      margin-bottom: 10px;
+      page-break-after: avoid;
+    }
+    h3 { font-size: 12pt; margin-top: 16px; margin-bottom: 8px; }
+    ul { margin: 8px 0; padding-left: 22px; }
+    li { margin-bottom: 4px; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 12px 0 20px;
+      font-size: 10pt;
+    }
+    th, td {
+      border: 1px solid #ccc;
+      padding: 8px 10px;
+      text-align: left;
+    }
+    th { background: #f0f4ff; font-weight: 600; }
+    pre, code {
+      font-family: "SF Mono", Menlo, Monaco, Consolas, monospace;
+      font-size: 9pt;
+      background: #f5f5f5;
+    }
+    pre {
+      padding: 14px;
+      border-radius: 6px;
+      border: 1px solid #ddd;
+      overflow-x: auto;
+      white-space: pre-wrap;
+    }
+    .note {
+      background: #fff8e6;
+      border-left: 4px solid #f59e0b;
+      padding: 10px 14px;
+      margin: 12px 0;
+      font-size: 10pt;
+    }
+    .flow {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      padding: 14px;
+      font-family: monospace;
+      font-size: 9.5pt;
+      white-space: pre;
+      border-radius: 6px;
+    }
+    .footer {
+      margin-top: 32px;
+      padding-top: 12px;
+      border-top: 1px solid #ddd;
+      font-size: 9pt;
+      color: #888;
+    }
+  </style>
+</head>
+<body>
+  <h1>BinsApp OTP Security Summary</h1>
+  <p class="subtitle">Backend changes (no frontend changes required) · BinsApp Backend</p>
+
+  <h2>What Was Changed in the Backend</h2>
+
+  <h3>1. Twilio Error Handling</h3>
+  <p><strong>Files:</strong> <code>src/utils/sendOTP.js</code>, <code>src/modules/auth/service.js</code>, <code>src/utils/apiError.js</code></p>
+  <ul>
+    <li>Added <code>parseTwilioError()</code> with clear messages and hints for common Twilio codes.</li>
+    <li>API errors now include a <code>twilio</code> object: <code>httpStatus</code>, <code>code</code>, <code>message</code>, <code>moreInfo</code>, <code>hint</code>.</li>
+    <li>Logs no longer expose Twilio credentials in raw Axios error objects.</li>
+  </ul>
+
+  <h3>2. Debug Logging</h3>
+  <p><strong>File:</strong> <code>src/modules/auth/controller.js</code></p>
+  <ul>
+    <li>Logs on <code>send-otp</code>: request context and failures (route, phone, user-agent, error details).</li>
+  </ul>
+
+  <h3>3. OTP Abuse Protection</h3>
+  <p><strong>Files:</strong> <code>src/utils/otpProtection.js</code>, <code>src/middlewares/otpSendGuard.js</code></p>
+  <ul>
+    <li>Middleware on <code>POST /api/auth/send-otp</code> — runs <strong>before</strong> Twilio is called.</li>
+    <li>Same API contract; frontend flow unchanged.</li>
+  </ul>
+
+  <table>
+    <thead>
+      <tr><th>Control</th><th>Default</th><th>Purpose</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Per phone</td><td>3 / 24h</td><td>Stop same number spam</td></tr>
+      <tr><td>Per phone cooldown</td><td>90 sec</td><td>Stop rapid resends</td></tr>
+      <tr><td>Per IP</td><td>8 / hour</td><td>Stop scripts from one IP</td></tr>
+      <tr><td>Distinct phones per IP</td><td>5 / hour</td><td>Stop SMS pumping pattern</td></tr>
+      <tr><td><strong>Global daily cap</strong></td><td><strong>100 / day</strong></td><td><strong>Financial fuse — max SMS/day</strong></td></tr>
+      <tr><td>IP auto-block</td><td>24 hours</td><td>Block abusive IPs after flood</td></tr>
+    </tbody>
+  </table>
+
+  <h3>4. Region Rules</h3>
+  <p><strong>Files:</strong> <code>src/utils/otpProtection.js</code>, <code>src/config/env.js</code></p>
+  <ul>
+    <li><strong>US (+1):</strong> all numbers allowed (with rate limits above).</li>
+    <li><strong>Pakistan (+92):</strong> only whitelist allowed; all other +92 numbers blocked (e.g. +92355...).</li>
+  </ul>
+  <p><strong>Pakistan whitelist (test numbers):</strong></p>
+  <ul>
+    <li>+923467893622</li>
+    <li>+923117384180</li>
+    <li>+923703839371</li>
+    <li>+923006918515</li>
+    <li>+923186159112</li>
+  </ul>
+  <p>Blocked regions/numbers get: <em>"Phone number region is not supported"</em>.</p>
+
+  <h2>Environment Variables (Set on Server)</h2>
+  <pre># Master switch
+OTP_PROTECTION_ENABLED=true
+
+# Rate limits
+OTP_PHONE_MAX_PER_DAY=3
+OTP_PHONE_COOLDOWN_SEC=90
+OTP_IP_MAX_PER_HOUR=8
+OTP_IP_DISTINCT_PHONES_MAX=5
+OTP_GLOBAL_DAILY_MAX=100          # adjust to your real daily OTP volume
+
+# Regions
+OTP_ALLOWED_PREFIXES=+1             # US only (do NOT include +92 here)
+OTP_PK_WHITELIST=+923467893622,+923117384180,+923703839371,+923006918515,+923186159112
+
+# IP block duration after abuse
+OTP_IP_BLOCK_HOURS=24</pre>
+  <div class="note">
+    <strong>Important:</strong> If server <code>.env</code> has <code>OTP_ALLOWED_PREFIXES=+1,+92</code>, remove <code>+92</code> or Pakistan whitelist won't work as intended.
+  </div>
+
+  <h2>Twilio Console Actions (Manual, No Code)</h2>
+  <ul>
+    <li><strong>Disable auto-recharge</strong> — Billing → Payment settings → Auto-recharge OFF.</li>
+    <li>Keep <strong>low manual balance</strong> only (e.g. $20–50) — when balance = $0, SMS stops.</li>
+    <li>Enable <strong>Verify Fraud Guard</strong> on your Verify Service.</li>
+    <li>Restrict <strong>Geo permissions</strong> to US (and PK only if needed for test numbers).</li>
+    <li>Set <strong>usage alerts</strong> (Usage Triggers) for early warning — alerts only unless you build a kill-switch webhook.</li>
+    <li><strong>Rotate Auth Token</strong> if it was ever exposed in logs.</li>
+  </ul>
+
+  <h2>Files Touched</h2>
+  <table>
+    <thead>
+      <tr><th>File</th><th>Change</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>src/utils/sendOTP.js</td><td>Twilio error parsing, safer logging</td></tr>
+      <tr><td>src/modules/auth/service.js</td><td>Twilio error throwing, lookup auth errors</td></tr>
+      <tr><td>src/utils/apiError.js</td><td>twilio field in error responses</td></tr>
+      <tr><td>src/modules/auth/controller.js</td><td>send-otp debug logs</td></tr>
+      <tr><td>src/utils/otpProtection.js</td><td>Rate limits, region rules, PK whitelist</td></tr>
+      <tr><td>src/middlewares/otpSendGuard.js</td><td>Middleware wrapper</td></tr>
+      <tr><td>src/modules/auth/routes.js</td><td>otpSendGuard on send-otp</td></tr>
+      <tr><td>src/config/env.js</td><td>OTP protection config</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Log Messages to Watch</h2>
+  <table>
+    <thead>
+      <tr><th>Log</th><th>Meaning</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>otp.protection.allowed</td><td>OTP request passed checks</td></tr>
+      <tr><td>otp.protection.region_blocked</td><td>Blocked country/number (e.g. PK not on whitelist)</td></tr>
+      <tr><td>otp.protection.blocked</td><td>Rate limit hit</td></tr>
+      <tr><td>otp.protection.ip_blocked</td><td>IP auto-blocked</td></tr>
+      <tr><td>otp.protection.global_daily_cap_reached</td><td>Daily SMS cap hit — fuse triggered</td></tr>
+      <tr><td>auth.send-otp.failure</td><td>send-otp failed (check twilio in response)</td></tr>
+    </tbody>
+  </table>
+
+  <h2>How Protection Layers Work</h2>
+  <div class="flow">Request → Rate limits → Region check (+1 open, +92 whitelist only)
+       → If OK → Twilio send OTP
+       → If cap/limit hit → Error (no Twilio call, no charge)</div>
+  <p><strong>Max theoretical OTP spend</strong> ≈ OTP_GLOBAL_DAILY_MAX × cost per SMS<br />
+  (e.g. 100 × ~$0.05 ≈ <strong>$5/day</strong>)</p>
+
+  <p class="footer">Generated for BinsApp Backend · OTP Security Implementation</p>
+</body>
+</html>

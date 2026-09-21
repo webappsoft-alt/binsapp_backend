@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>BinsApp Backend — Fixes & Changes Summary</title>
+<style>
+  :root {
+    --brand: #14764f;
+    --brand-light: #e6f4ee;
+    --ink: #1f2937;
+    --muted: #6b7280;
+    --border: #e5e7eb;
+    --bad: #b91c1c;
+    --good: #14764f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: var(--ink);
+    line-height: 1.5;
+    margin: 0;
+    padding: 0 32px 64px;
+    max-width: 950px;
+    margin: 0 auto;
+    font-size: 14px;
+  }
+  header.cover {
+    padding: 48px 0 24px;
+    border-bottom: 4px solid var(--brand);
+    margin-bottom: 28px;
+  }
+  header.cover h1 { font-size: 30px; margin: 0 0 6px; color: var(--brand); }
+  header.cover .sub { color: var(--muted); font-size: 15px; }
+  header.cover .meta { margin-top: 14px; font-size: 13px; color: var(--muted); }
+  h2 {
+    font-size: 19px;
+    margin: 34px 0 6px;
+    padding: 8px 12px;
+    background: var(--brand-light);
+    border-left: 4px solid var(--brand);
+    border-radius: 4px;
+  }
+  h3 { font-size: 15px; margin: 18px 0 4px; color: var(--ink); }
+  .fix { padding: 6px 0 10px; border-bottom: 1px dashed var(--border); }
+  .fix:last-child { border-bottom: none; }
+  .label { font-weight: 600; }
+  .prob { color: var(--bad); }
+  .sol { color: var(--good); }
+  ul { margin: 4px 0 8px; padding-left: 20px; }
+  li { margin: 2px 0; }
+  code {
+    background: #f3f4f6;
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12px;
+  }
+  .files { color: var(--muted); font-size: 12px; margin-top: 4px; }
+  .files code { background: #eef2ff; }
+  .toc { columns: 2; font-size: 13px; margin: 10px 0 8px; }
+  .toc a { color: var(--brand); text-decoration: none; }
+  table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 12.5px; }
+  th, td { border: 1px solid var(--border); padding: 5px 8px; text-align: left; vertical-align: top; }
+  th { background: #f9fafb; }
+  .tag { display: inline-block; font-size: 10.5px; font-weight: 700; padding: 1px 7px; border-radius: 10px; color: #fff; }
+  .tag.bug { background: #b91c1c; }
+  .tag.feat { background: #2563eb; }
+  .tag.money { background: #a16207; }
+  .tag.data { background: #6d28d9; }
+  .note { background: #fffbeb; border: 1px solid #fde68a; padding: 8px 12px; border-radius: 6px; font-size: 12.5px; margin: 8px 0; }
+  footer { margin-top: 40px; padding-top: 12px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12px; }
+  @media print {
+    body { padding: 0 8px; font-size: 12px; }
+    h2 { break-after: avoid; }
+    .fix { break-inside: avoid; }
+    a { color: var(--ink); text-decoration: none; }
+  }
+</style>
+</head>
+<body>
+
+<header class="cover">
+  <h1>BinsApp Backend — Fixes &amp; Changes Summary</h1>
+  <div class="sub">Work completed on the <code>new_flow_uber</code> branch</div>
+  <div class="meta">
+    Prepared: July 23, 2026 &nbsp;•&nbsp; Covers roughly July 17–23, 2026<br/>
+    Scope: authentication/OTP, dispatch, payments &amp; ledger, notifications, operator scoring,
+    live tracking, ratings, and partner-service applications.
+  </div>
+</header>
+
+<p class="note"><strong>How to save as PDF:</strong> open this file in a browser and choose
+<em>Print → Save as PDF</em> (letter/A4, default margins). All content is print-optimized.</p>
+
+<div class="toc">
+  <a href="#auth">1. Authentication &amp; OTP</a><br/>
+  <a href="#dispatch">2. Dispatch (Uber-style)</a><br/>
+  <a href="#matching">3. Dumpster Matching</a><br/>
+  <a href="#payments">4. Payments &amp; Ledger</a><br/>
+  <a href="#notifs">5. Notifications &amp; Copy</a><br/>
+  <a href="#timeline">6. Order Timeline</a><br/>
+  <a href="#tracking">7. Live Location Tracking</a><br/>
+  <a href="#scoring">8. Operator Scoring</a><br/>
+  <a href="#ratings">9. Ratings &amp; Reviews</a><br/>
+  <a href="#partner">10. Partner Services (Tree/Junk)</a><br/>
+  <a href="#tooling">11. Diagnostic Scripts &amp; Deploy</a><br/>
+</div>
+
+<!-- 1 -->
+<h2 id="auth">1. Authentication &amp; OTP</h2>
+
+<div class="fix">
+  <h3><span class="tag bug">FIX</span> "OTP limit exceeded" on all numbers (static &amp; real)</h3>
+  <div><span class="label prob">Problem:</span> Every number, including static test numbers, hit rate limits; <code>+92</code> numbers were blocked by region gating; the express limiter bucketed everyone under a single <code>unknown</code> key.</div>
+  <div><span class="label sol">Fix:</span></div>
+  <ul>
+    <li>Static test numbers now fully bypass Redis + express limiters and use fixed OTP <code>1234</code>.</li>
+    <li>Allowed <code>+92</code> region; raised per-day cap; limiter now falls back to a per-IP bucket when phone is missing.</li>
+    <li>Twilio Verify path confirmed; static numbers skip Twilio send entirely.</li>
+  </ul>
+  <div class="files">Files: <code>utils/staticOtpPhones.js</code>, <code>utils/otpProtection.js</code>, <code>config/env.js</code>, <code>modules/auth/routes.js</code></div>
+</div>
+
+<div class="fix">
+  <h3><span class="tag feat">ADD</span> New static test numbers</h3>
+  <div>Added <code>+923467893622</code> and <code>+923703839371</code> as static test numbers (login with OTP <code>1234</code>, no rate limits).</div>
+  <div class="files">Files: <code>utils/staticOtpPhones.js</code></div>
+</div>
+
+<div class="fix">
+  <h3><span class="tag feat">CONFIRM</span> <code>send-otp</code> hash &amp; SMS Retriever behavior</h3>
+  <ul>
+    <li>Endpoint accepts optional 11-char app <code>hash</code>; it is preserved through validation and forwarded to Twilio as <code>AppHash</code> (uses the client's per-install hash, no hardcoded fallback).</li>
+    <li>Twilio Verify composes the SMS body and appends the hash on the last line automatically.</li>
+    <li>Added a server log confirming the hash was forwarded (<code>appHashForwarded</code>, <code>appHashLength</code>).</li>
+  </ul>
+  <div class="note">Action item (Twilio console, not code): set Verify Service <strong>Code Length = 4</strong> if the app expects 4-digit SMS codes — real codes are otherwise 6 digits.</div>
+  <div class="files">Files: <code>utils/sendOTP.js</code>, <code>modules/auth/controller.js</code></div>
+</div>
+
+<!-- 2 -->
+<h2 id="dispatch">2. Dispatch (Uber-style Priority)</h2>
+
+<div class="fix">
+  <h3><span class="tag feat">ADD</span> Multi-wave priority dispatch with immediate-dispatch fallback</h3>
+  <div><span class="label prob">Problem:</span> With tiers configured but no operators holding real tier data, every booking still scheduled a delayed first wave (~40s) — customers waited for nothing in the early launch phase.</div>
+  <div><span class="label sol">Fix:</span> If no <em>meaningful</em> tier/score data exists among matched operators, skip all delays and notify everyone immediately. Waves resume automatically once real tier data accrues.</div>
+  <div class="files">Files: <code>utils/dispatchService.js</code>, <code>utils/dispatchWorker.js</code></div>
+</div>
+
+<div class="fix">
+  <h3><span class="tag bug">FIX</span> Notify all eligible owners + "missed opportunity" message</h3>
+  <ul>
+    <li>Confirmed all eligible owners are notified when a customer books.</li>
+    <li>When one owner accepts, the others get a <code>request-unavailable</code> event + a "you missed this one, stay tuned" notification.</li>
+  </ul>
+  <div class="files">Files: <code>socket/socket.js</code>, <code>utils/orderMessages.js</code></div>
+</div>
+
+<!-- 3 -->
+<h2 id="matching">3. Dumpster Matching Consistency</h2>
+
+<div class="fix">
+  <h3><span class="tag bug">FIX</span> <code>/api/dumbster/nearby</code> vs availability check disagreed</h3>
+  <div><span class="label prob">Problem:</span> <code>nearby</code> showed sizes that could not actually be booked (ignored radius, real capacity, and booking conflicts).</div>
+  <div><span class="label sol">Fix:</span> Centralized matching logic using capacity-aware calculation (<code>quantity − overlapping bookings</code>). Removed date filter from <code>nearby</code> (dates are chosen on a later screen).</div>
+  <div class="files">Files: <code>utils/dustbinMatching.js</code>, <code>modules/dumbster/service.js</code>, <code>modules/dumbster/controller.js</code></div>
+</div>
+
+<div class="fix">
+  <h3><span class="tag bug">FIX</span> Owner accept failed when size matched but catalog ID differed</h3>
+  <div><span class="label prob">Problem:</span> Accept compared catalog ObjectIds only, rejecting valid same-size matches (e.g. both 30 Yard, different catalog entry).</div>
+  <div><span class="label sol">Fix:</span> Accept if catalog IDs match <em>or</em> normalized yard sizes are equal. Error copy corrected to "Selected dumpster size doesn't match the customer's requested dumpster size."</div>
+  <div class="files">Files: <code>socket/socket.js</code></div>
+</div>
+
+<!-- 4 -->
+<h2 id="payments">4. Payments &amp; Ledger</h2>
+
+<div class="fix">
+  <h3><span class="tag money">MONEY</span> Add-on fees split correctly (driveway / insurance)</h3>
+  <div><span class="label prob">Problem:</span> The 15% admin commission was applied to the entire order total, including the flat add-on fees.</div>
+  <div><span class="label sol">Fix:</span> Insurance ($39) and driveway ($50) protection now go 100% to admin; the 15% commission applies only to the remaining base amount. Backfilled pending orders (incl. <code>QQadu</code>).</div>
+  <div class="files">Files: <code>utils/paymentHold.js</code>, <code>scripts/backfill-order-amount.js</code></div>
+</div>
+
+<div class="fix">
+  <h3><span class="tag money">FLOW</span> Capture on owner-accept (was capturing at completion)</h3>
+  <div>Card is now captured when the owner accepts (matching business intent and avoiding the 7-day Stripe hold expiry). Funds sit on the platform account and transfer to the owner on completion. Rollback restores inventory/status if capture fails.</div>
+  <div class="files">Files: <code>socket/socket.js</code>, <code>utils/StripePayment.js</code></div>
+</div>
+
+<div class="fix">
+  <h3><span class="tag money">FIX</span> Refunds work for uncaptured holds</h3>
+  <div>Admin cancel now <em>cancels</em> uncaptured PaymentIntents and <em>refunds</em> captured ones, normalizing success detection.</div>
+  <div class="files">Files: <code>utils/StripePayment.js</code>, <code>modules/order/service.js</code></div>
+</div>
+
+<div class="fix">
+  <h3><span class="tag money">FIX</span> Ledger accuracy (4 issues)</h3>
+  <ul>
+    <li>Booking debit is now reversed (credit entry) on cancel/expiry.</li>
+    <li>Wallet platform commission is explicitly credited to the admin balance + transaction record.</li>
+    <li>Assign-order completion now captures the hold and guards against double-settlement.</li>
+    <li>Admin-cancel-after-accept refund now writes a matching credit ledger entry for the customer.</li>
+  </ul>
+  <div class="files">Files: <code>modules/order/service.js</code>, <code>socket/socket.js</code>, <code>modules/assign_order/service.js</code>, <code>utils/orderExpiryWorker.js</code></div>
+</div>
+
+<div class="fix">
+  <h3><span class="tag bug">FIX</span> Customer cancel of a pending request rebuilt</h3>
+  <div>Now allowed only while <code>pending</code> &amp; <code>unmatched</code>; reverses payment, cancels dispatch/expiry jobs, and notifies owners/customer/admin with correct copy.</div>
+  <div class="files">Files: <code>modules/order/service.js</code></div>
+</div>
+
+<!-- 5 -->
+<h2 id="notifs">5. Notifications &amp; Copy</h2>
+
+<div class="fix">
+  <h3><span class="tag feat">ADD</span> Real-time notification badge (<code>new:notification</code>)</h3>
+  <div>Every new notification is emitted to the recipient's socket room so the app can update the Notifications tab badge instantly.</div>
+  <div class="files">Files: <code>utils/notifications.js</code></div>
+</div>
+
+<div class="fix">
+  <h3><span class="tag feat">ADD</span> FCM push payload for Android &amp; iOS</h3>
+  <div>Android channel <code>bins_order_alerts</code> + <code>order_alert</code> sound + high priority; iOS APNs sound/alert; stringified <code>data.order</code>/<code>data.orderId</code> for tap-navigation. A sample payload is logged in staging for QA.</div>
+  <div class="files">Files: <code>utils/notifications.js</code></div>
+</div>
+
+<div class="fix">
+  <h3><span class="tag bug">FIX</span> Role-correct notification &amp; email text</h3>
+  <ul>
+    <li>Customer accept notification now says "Order Accepted" (was "provider matched"); customer email no longer contained owner-facing copy.</li>
+    <li>Admin cancel-approval no longer told the customer their order was "accepted".</li>
+    <li>Email template made role-neutral and driven by the passed title/description.</li>
+    <li>Rating email fixed (a duplicate <code>html</code> key was overwriting the detailed template).</li>
+    <li>"On my way" and "Confirm drop off" are now distinct notifications with different titles/bodies.</li>
+  </ul>
+  <div class="files">Files: <code>utils/orderMessages.js</code>, <code>utils/emailTemplate.js</code>, <code>modules/order/service.js</code>, <code>modules/assign_order/service.js</code>, <code>modules/rating/service.js</code></div>
+</div>
+
+<!-- 6 -->
+<h2 id="timeline">6. Order Timeline</h2>
+
+<div class="fix">
+  <h3><span class="tag bug">FIX</span> Role-specific, clearer timeline text</h3>
+  <div><span class="label prob">Problem:</span> Timeline stored one message shown identically to customer and owner, with awkward wording.</div>
+  <div><span class="label sol">Fix:</span> Added <code>customerMessage</code>/<code>operatorMessage</code> to the timeline model; every event now has role-specific copy read based on who's viewing.</div>
+  <div class="files">Files: <code>models/OrderTimeline.js</code>, <code>utils/orderMessages.js</code>, <code>modules/order/service.js</code>, <code>modules/order/controller.js</code></div>
+</div>
+
+<div class="fix">
+  <h3><span class="tag bug">FIX</span> "is complete" → "is completed"</h3>
+  <div>Corrected the customer completion timeline line grammar.</div>
+  <div class="files">Files: <code>utils/orderMessages.js</code></div>
+</div>
+
+<!-- 7 -->
+<h2 id="tracking">7. Live Location Tracking</h2>
+
+<div class="fix">
+  <h3><span class="tag feat">ADD</span> Unified <code>location-update</code> channel + live-location endpoint</h3>
+  <ul>
+    <li>All driver GPS relays go through a single <code>location-update</code> event with a consistent payload (<code>orderId</code>, <code>userId</code>, <code>currentlat/lng</code>, <code>onway</code>, <code>status</code>, origin + dropoff coordinates).</li>
+    <li>Added <code>GET /api/order/:id/live-location</code> for seed-on-focus + polling.</li>
+    <li>Legacy <code>location-recieved</code> kept temporarily as a fallback.</li>
+  </ul>
+  <div class="files">Files: <code>socket/socket.js</code>, <code>modules/assign_order/service.js</code>, <code>modules/order/service.js</code>, <code>modules/order/routes.js</code></div>
+</div>
+
+<!-- 8 -->
+<h2 id="scoring">8. Operator Scoring &amp; Tiers</h2>
+
+<div class="fix">
+  <h3><span class="tag bug">FIX</span> Inaccurate metrics &amp; missing fields</h3>
+  <ul>
+    <li><code>NOTIFICATION_RECEIVED</code> events now logged → real acceptance rate.</li>
+    <li><code>onTime</code> tracked on completion → real on-time rate.</li>
+    <li>Added <code>responseRate</code>; separated it from response <em>time</em>; score returned as a number; <code>nextTier</code> resolved even for new operators.</li>
+  </ul>
+  <div class="files">Files: <code>modules/scoring/scoreEngine.js</code>, <code>models/JobEvent.js</code>, <code>models/User.js</code>, <code>utils/dispatchWorker.js</code>, <code>modules/users/service.js</code></div>
+</div>
+
+<div class="fix">
+  <h3><span class="tag bug">FIX</span> Score dropped after a completed order + full rating</h3>
+  <div><span class="label prob">Problem:</span> Operator score fell 71 → ~61 after a good outcome. Two causes: (1) historical completions had no <code>onTime</code> flag so they counted as "late"; (2) the deadline used <code>end_date</code> at midnight, flagging same-day completions as late.</div>
+  <div><span class="label sol">Fix:</span> New <code>isDeliveredOnTime()</code> helper counts the whole end-date day; both completion sites use it. Backfilled historical events and recomputed scores (operator restored to 71, on-time 100%).</div>
+  <div class="files">Files: <code>utils/deliveryTiming.js</code>, <code>socket/socket.js</code>, <code>modules/order/service.js</code>, <code>scripts/backfill-ontime-and-rescore.js</code></div>
+</div>
+
+<!-- 9 -->
+<h2 id="ratings">9. Ratings &amp; Reviews</h2>
+
+<div class="fix">
+  <h3><span class="tag bug">FIX</span> Rating notification went to the rater instead of the ratee</h3>
+  <div><span class="label prob">Problem:</span> <code>user</code>/<code>to_id</code> were swapped, so the in-app notification &amp; real-time badge landed on the person giving the rating.</div>
+  <div><span class="label sol">Fix:</span> Recipient (<code>to_id</code>) is now always the person being rated; all channels (in-app, badge, push, email) aligned.</div>
+  <div class="files">Files: <code>modules/rating/service.js</code></div>
+</div>
+
+<div class="fix">
+  <h3><span class="tag feat">ADD</span> Order-ratings endpoint returns both ratings</h3>
+  <div><code>GET /api/rating/order/:orderId</code> now returns all ratings for the order plus role-labeled fields (<code>customerRating</code>, <code>ownerRating</code>, <code>renterRating</code>, <code>renteeRating</code>) so both sides display correctly.</div>
+  <div class="files">Files: <code>modules/rating/service.js</code></div>
+</div>
+
+<!-- 10 -->
+<h2 id="partner">10. Partner Services — Tree &amp; Junk Removal</h2>
+
+<div class="fix">
+  <h3><span class="tag data">DIAGNOSE</span> "Rejected on admin, pending on app"</h3>
+  <div><span class="label prob">Finding:</span> The application's real <code>status</code> in the DB was <code>pending</code>; the backend returns the same <code>status</code> to both app and admin. The admin panel was <em>deriving</em> "rejected" from the per-document approval checkboxes (all <code>false</code> on a new application). This is an admin-frontend display issue, not a backend bug.</div>
+  <div><span class="label sol">Recommendation:</span> Admin UI should render the <code>status</code> field directly; only treat as rejected when <code>status === "rejected"</code>.</div>
+</div>
+
+<div class="fix">
+  <h3><span class="tag data">DOCS</span> Required vs optional fields</h3>
+  <table>
+    <tr><th>Service</th><th>Required</th><th>Optional</th></tr>
+    <tr>
+      <td><strong>Tree Removal</strong></td>
+      <td>companyName, legalBusinessName, sameDayAvailable, location, ownerFullName, drivers_license (≥1), COI, Tree_removal_license, radius (defaults 25)</td>
+      <td>ein, address, city, state, zip, country, License_Type, License_Number, License_State, License_Expiration, Workers_comp, Certified_arborist, Arborist_credential</td>
+    </tr>
+    <tr>
+      <td><strong>Junk Removal</strong></td>
+      <td>companyName, legalBusinessName, sameDayAvailable, location, ein, ownerFullName</td>
+      <td>email, address, city, state, zip, country, drivers_license, COI, Business_license, minimum_insurance_amount</td>
+    </tr>
+  </table>
+  <div class="note">Admin/review fields (<code>status</code>, <code>notes</code>, all <code>is*Approved</code> + <code>*_note</code>, <code>userId</code>, <code>bookings</code>) must not be sent by the apply form. On every resubmit the backend forces <code>status: "pending"</code>. Note the field-name quirk: junk uses <code>isCOIAApproved</code>, tree uses <code>isCOIApproved</code>.</div>
+</div>
+
+<!-- 11 -->
+<h2 id="tooling">11. Diagnostic Scripts &amp; Deploy</h2>
+
+<div class="fix">
+  <ul>
+    <li><code>scripts/diagnose-operator-score.js</code> — dump an operator's stats + job-event breakdown.</li>
+    <li><code>scripts/backfill-ontime-and-rescore.js</code> — backfill historical <code>onTime</code> and recompute scores (dry-run by default, <code>--apply</code> to write).</li>
+    <li><code>scripts/check-portapotty-source.js</code> — check whether a user has a verified porta-potty source.</li>
+    <li><code>scripts/simulate-dropoff.js</code> — testing helper to advance an order to "confirm drop off" on a simulator (DB-only; does not fire notifications).</li>
+    <li><code>scripts/backfill-order-amount.js</code> — recompute order amounts for the payment-split fix.</li>
+    <li><code>deploy.sh</code> hardened: correct branch, Redis <code>otp:*</code> clear, PM2 restart, post-deploy smoke test.</li>
+  </ul>
+</div>
+
+<footer>
+  BinsApp Backend — internal change summary. All items are on the <code>new_flow_uber</code> branch and take effect on the next deploy (data backfills already applied to the live DB where noted). Generated automatically from the working session.
+</footer>
+
+</body>
+</html>

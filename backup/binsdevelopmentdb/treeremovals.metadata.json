@@ -1,0 +1,1 @@
+{"indexes":[{"v":{"$numberInt":"2"},"key":{"_id":{"$numberInt":"1"}},"name":"_id_"},{"v":{"$numberInt":"2"},"key":{"location":"2dsphere"},"name":"location_2dsphere","2dsphereIndexVersion":{"$numberInt":"3"}}],"uuid":"a0d3c07e86ad47019b51a4c2a8fbaf26","collectionName":"treeremovals","type":"collection"}

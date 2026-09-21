@@ -1,0 +1,61 @@
+# Dependency directories (node_modules will be created fresh in container)
+node_modules/
+
+# Log files
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Environment variables (except those needed for build)
+.env.local
+.env.development
+.env.test
+
+# Build artifacts
+dist/
+build/
+out/
+.next/
+.nuxt/
+
+# Cache directories
+.cache/
+.temp/
+
+# Editor/IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# System files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Icon?
+._*
+
+# Package manager files (keep package-lock.json)
+yarn.lock
+pnpm-lock.yaml
+
+# Debug files
+debug/
+*.pid
+
+# Coverage directories
+coverage/
+.nyc_output/
+
+# Temporary files
+*.tmp
+*.bak
+
+# Docker-specific ignores
+Dockerfile.dev
+docker-compose*.yml
+**/.docker
+**/docker-compose*
+**/.env.docker

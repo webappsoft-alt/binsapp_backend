@@ -1,0 +1,62 @@
+# Dependency directories
+node_modules/
+
+# Log files
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Environment variables
+.env
+.env.local
+.env.development
+.env.test
+.env.production
+
+# Build artifacts
+dist/
+build/
+out/
+.next/
+.nuxt/
+
+# Cache directories
+.cache/
+.temp/
+
+# Editor/IDE specific files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Package manager files
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Debug files
+debug/
+*.pid
+
+# Coverage directories
+coverage/
+.nyc_output/
+
+# OS generated files
+ehthumbs.db
+Icon?
+._*
+
+# Temporary files
+*.tmp
+*.bak
+
+*.test.*
