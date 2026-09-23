@@ -15,7 +15,6 @@ DEPLOY_BRANCH="${DEPLOY_BRANCH:-new_flow_uber}"
 PM2_APP_NAME="${PM2_APP_NAME:-bins-api}"
 GIT_REPO="git@github.com:arslan0044/binsApp.git"
 # Static test number that must always return success:true (code 1234) when the
-# NEW code is truly live. Used as the post-deploy smoke test.
 SMOKE_PHONE="${SMOKE_PHONE:-+923467893622}"
 API_URL="${API_URL:-https://api.binsapp.ai/api/auth/send-otp}"
 
