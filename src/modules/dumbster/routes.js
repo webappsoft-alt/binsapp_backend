@@ -7,6 +7,9 @@ import {
   createPortaPottySchema,
   updatePortaPottySchema,
   updateJunkRemovalSchema,
+  createPricingZoneSchema,
+  updatePricingZoneSchema,
+  updatePricingZoneStatusSchema,
 } from "./validation.js";
 import {
   createDumbsterController,
@@ -30,6 +33,12 @@ import {
   getAllJunkRemovalController,
   getJunkRemovalByIdController,
   // deleteJunkRemovalController,
+  createPricingZoneController,
+  updatePricingZoneController,
+  getAllPricingZonesController,
+  getPricingZoneByIdController,
+  deletePricingZoneController,
+  updatePricingZoneStatusController,
 } from "./controller.js";
 import { authenticate, admin } from "../../middlewares/auth.js";
 import { validate } from "../../middlewares/validate.js";
@@ -936,6 +945,44 @@ router.get("/junk-removal", getAllJunkRemovalController);
 // router.get("/junk-removal/:id", getJunkRemovalByIdController);
 
 // router.use();
+
+/**
+ * @swagger
+ * tags:
+ *   name: Dumpster Pricing Zones
+ *   description: Geographic dumpster pricing (State → Market → Zone → Size rates). Catalog dumpster prices remain the fallback when no zone matches.
+ */
+
+router.post(
+  "/pricing-zones",
+  [authenticate, admin],
+  validate(createPricingZoneSchema),
+  createPricingZoneController,
+);
+
+router.get("/pricing-zones", getAllPricingZonesController);
+
+router.get("/pricing-zones/:id", getPricingZoneByIdController);
+
+router.put(
+  "/pricing-zones/:id",
+  [authenticate, admin],
+  validate(updatePricingZoneSchema),
+  updatePricingZoneController,
+);
+
+router.put(
+  "/pricing-zones/:id/status",
+  [authenticate, admin],
+  validate(updatePricingZoneStatusSchema),
+  updatePricingZoneStatusController,
+);
+
+router.delete(
+  "/pricing-zones/:id",
+  [authenticate, admin],
+  deletePricingZoneController,
+);
 
 /**
  * @swagger

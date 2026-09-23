@@ -110,11 +110,26 @@ export async function resolveZipCoordinates(zipCode) {
  * @param {Object} coords - { latitude, longitude }
  * @returns {Promise<Array<Object>>} List of actually bookable dumpster sizes
  */
-export async function checkRealDumpsterAvailability({ latitude, longitude }) {
+export async function checkRealDumpsterAvailability({
+  latitude,
+  longitude,
+  city,
+  state,
+  stateCode,
+  zip,
+  county,
+  materialType,
+}) {
   try {
     const results = await dumbsterService.getAvailableDumbsters({
       lat: latitude,
       lng: longitude,
+      city,
+      state,
+      stateCode,
+      zip,
+      county,
+      materialType,
       sizeField: "dumbster",
     });
 
@@ -138,6 +153,11 @@ export async function checkRealDumpsterAvailability({ latitude, longitude }) {
         startingPrice: Number(item.price) || Number(item.three_days_price) || 349,
         threeDaysPrice: item.three_days_price || null,
         sevenDaysPrice: item.seven_days_price || null,
+        includedTons: item.includedTons ?? item.tons ?? null,
+        overagePerTon: item.overagePerTon ?? null,
+        extraDay: item.extraDay ?? item.per_dim_rate ?? null,
+        pricingSource: item.pricingSource || "fallback",
+        pricingZone: item.pricingZone || null,
         isPopular: displaySize.includes("20") || displaySize.includes("18-20"),
       };
     });
@@ -344,7 +364,13 @@ export async function checkRealServiceAvailability({ serviceType = "Dumbster", z
   // 2. Query real underlying availability per service type
   switch (normalizedService) {
     case "Dumbster": {
-      const availableSizes = await checkRealDumpsterAvailability({ latitude, longitude });
+      const availableSizes = await checkRealDumpsterAvailability({
+        latitude,
+        longitude,
+        city,
+        state,
+        zip: zipCode,
+      });
 
       if (availableSizes.length === 0) {
         return {

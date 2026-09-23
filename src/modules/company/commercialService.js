@@ -238,6 +238,7 @@ export async function getQuoteForUser(userId, body) {
     zip: body.zip,
     regionName: body.regionName,
     location: body.location,
+    rotationType: body.rotationType || "initial",
   });
 }
 
@@ -326,6 +327,39 @@ export async function adminSetCompanyConfig(companyId, config, adminId) {
     allowed.requiredDocs = {
       w9: Boolean(config.requiredDocs.w9),
       coi: Boolean(config.requiredDocs.coi),
+    };
+  }
+  if (config.negotiatedRotationTerms != null) {
+    const t = config.negotiatedRotationTerms;
+    allowed.negotiatedRotationTerms = {
+      enabled: Boolean(t.enabled),
+      includedDaysPerRotation:
+        t.includedDaysPerRotation == null || t.includedDaysPerRotation === ""
+          ? null
+          : Number(t.includedDaysPerRotation),
+      includedTonsPerRotation:
+        t.includedTonsPerRotation == null || t.includedTonsPerRotation === ""
+          ? null
+          : Number(t.includedTonsPerRotation),
+      overagePerTon:
+        t.overagePerTon == null || t.overagePerTon === ""
+          ? null
+          : Number(t.overagePerTon),
+      extraDay:
+        t.extraDay == null || t.extraDay === "" ? null : Number(t.extraDay),
+      sizes: (t.sizes || [])
+        .filter((s) => s && s.size)
+        .map((s) => ({
+          size: String(s.size),
+          initialDelivery:
+            s.initialDelivery == null || s.initialDelivery === ""
+              ? null
+              : Number(s.initialDelivery),
+          emptyAndRedeliver:
+            s.emptyAndRedeliver == null || s.emptyAndRedeliver === ""
+              ? null
+              : Number(s.emptyAndRedeliver),
+        })),
     };
   }
 
@@ -449,6 +483,7 @@ export async function adminGetPricingPlan(companyId) {
     pricingPlan: company.pricingPlan,
     companyName: company.companyName,
     paymentMethod: company.paymentMethod,
+    negotiatedRotationTerms: company.negotiatedRotationTerms || null,
   };
 }
 
@@ -575,6 +610,7 @@ export async function createSwapRequest(userId, orderId, payload = {}) {
     size: requestedSize,
     numDays: order.num_days || 3,
     location: order.location,
+    rotationType: "empty_redeliver",
   });
 
   let dumbsterId = quote.dumbsterId || order.dumbster?._id || order.dumbster;

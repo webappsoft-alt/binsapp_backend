@@ -24,6 +24,8 @@ import {
   getCompanyPricingPlan,
   deleteCompanyPricingPlan,
   setCompanyCommercialConfig,
+  getCommercialGlobalPricing,
+  updateCommercialGlobalPricing,
   adminListCompanyBilling,
   adminMarkInvoicePaid,
   getAdminManualReviewRequests,
@@ -1555,6 +1557,10 @@ router.post(
   upsertCompanyPricingPlan,
 );
 router.delete("/company/:id/pricing-plan", deleteCompanyPricingPlan);
+
+/** Platform-wide commercial defaults (company config overrides when set). */
+router.get("/commercial-global-pricing", getCommercialGlobalPricing);
+router.put("/commercial-global-pricing", updateCommercialGlobalPricing);
 
 /**
  * Commercial config (payment method, invoice terms, docs, tier)

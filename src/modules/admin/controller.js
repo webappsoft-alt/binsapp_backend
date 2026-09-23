@@ -537,6 +537,39 @@ export async function setCompanyCommercialConfig(req, res, next) {
   }
 }
 
+export async function getCommercialGlobalPricing(req, res, next) {
+  try {
+    const { getGlobalCommercialPricing } =
+      await import("../../utils/commercialPricing.js");
+    const data = await getGlobalCommercialPricing();
+    res.status(200).json({
+      success: true,
+      message: "Global commercial pricing fetched",
+      data,
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function updateCommercialGlobalPricing(req, res, next) {
+  try {
+    const { updateGlobalCommercialPricing } =
+      await import("../../utils/commercialPricing.js");
+    const data = await updateGlobalCommercialPricing(
+      req.body?.rateCards || [],
+      req.body?.negotiatedRotationTerms,
+    );
+    res.status(200).json({
+      success: true,
+      message: "Global commercial pricing updated",
+      data,
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
 export async function adminListCompanyBilling(req, res, next) {
   try {
     const { adminListBilling } =

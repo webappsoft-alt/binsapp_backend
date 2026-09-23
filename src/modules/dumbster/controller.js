@@ -291,16 +291,116 @@ export const deleteDumbsterController = async (req, res, next) => {
 
 export const getNearbyDumbsterController = async (req, res, next) => {
   try {
-    const { lat, lng } = req.query;
+    const {
+      lat,
+      lng,
+      city,
+      state,
+      stateCode,
+      zip,
+      county,
+      materialType,
+    } = req.query;
     const dumbster = await DumbsterService.getAvailableDumbsters({
       lat,
       lng,
+      city,
+      state,
+      stateCode,
+      zip,
+      county,
+      materialType,
       sizeField: "dumbster",
     });
     res.status(200).json({
       success: true,
       message: "Dumbster fetched successfully",
       data: dumbster,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ── Pricing zones ────────────────────────────────────────────────────────────
+
+export const createPricingZoneController = async (req, res, next) => {
+  try {
+    const zone = await DumbsterService.createPricingZone(req.body);
+    res.status(201).json({
+      success: true,
+      message: "Pricing zone created successfully",
+      data: zone,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const updatePricingZoneController = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const zone = await DumbsterService.updatePricingZone(id, req.body);
+    res.status(200).json({
+      success: true,
+      message: "Pricing zone updated successfully",
+      data: zone,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getAllPricingZonesController = async (req, res, next) => {
+  try {
+    const data = await DumbsterService.getAllPricingZones(req.query);
+    res.status(200).json({
+      success: true,
+      message: "Pricing zones fetched successfully",
+      data,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getPricingZoneByIdController = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const zone = await DumbsterService.getPricingZoneById(id);
+    res.status(200).json({
+      success: true,
+      message: "Pricing zone fetched successfully",
+      data: zone,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const deletePricingZoneController = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const zone = await DumbsterService.deletePricingZone(id);
+    res.status(200).json({
+      success: true,
+      message: "Pricing zone deleted successfully",
+      data: zone,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const updatePricingZoneStatusController = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+    const zone = await DumbsterService.updatePricingZoneStatus(id, status);
+    res.status(200).json({
+      success: true,
+      message: "Pricing zone status updated successfully",
+      data: zone,
     });
   } catch (error) {
     next(error);

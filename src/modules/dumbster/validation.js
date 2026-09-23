@@ -10,6 +10,7 @@ export const createDumbsterSchema = Joi.object({
   three_days_saved: Joi.number(),
   three_days_price: Joi.number(),
   tons: Joi.number(),
+  overagePerTon: Joi.number().min(0).optional(),
   day_price_km: Joi.number(),
   delivery_price_km: Joi.number(),
   company_delivery_price_km: Joi.number(),
@@ -20,6 +21,18 @@ export const createDumbsterSchema = Joi.object({
   company_seven_days_saved: Joi.number(),
   company_per_dim_rate: Joi.number(),
   company_price: Joi.number(),
+  company_fourteen_days_price: Joi.number().min(0).optional(),
+  company_thirty_days_price: Joi.number().min(0).optional(),
+  company_enable_fourteen_day: Joi.boolean().optional(),
+  company_enable_thirty_day: Joi.boolean().optional(),
+  company_overage_enforced: Joi.boolean().optional(),
+  company_negotiated_enabled: Joi.boolean().optional(),
+  company_initial_delivery: Joi.number().min(0).allow(null).optional(),
+  company_empty_and_redeliver: Joi.number().min(0).allow(null).optional(),
+  company_included_days_per_rotation: Joi.number().min(0).allow(null).optional(),
+  company_included_tons_per_rotation: Joi.number().min(0).allow(null).optional(),
+  company_negotiated_overage_per_ton: Joi.number().min(0).allow(null).optional(),
+  company_negotiated_extra_day: Joi.number().min(0).allow(null).optional(),
   size: Joi.string()
     .required()
     .valid("6-8", "10-12", "14-16", "18-20", "30", "40"),
@@ -37,6 +50,7 @@ export const updateDumbsterSchema = Joi.object({
   three_days_saved: Joi.number(),
   three_days_price: Joi.number(),
   tons: Joi.number(),
+  overagePerTon: Joi.number().min(0).optional(),
   day_price_km: Joi.number(),
   delivery_price_km: Joi.number(),
   company_delivery_price_km: Joi.number(),
@@ -47,8 +61,20 @@ export const updateDumbsterSchema = Joi.object({
   company_seven_days_saved: Joi.number(),
   company_per_dim_rate: Joi.number(),
   company_price: Joi.number(),
+  company_fourteen_days_price: Joi.number().min(0).optional(),
+  company_thirty_days_price: Joi.number().min(0).optional(),
+  company_enable_fourteen_day: Joi.boolean().optional(),
+  company_enable_thirty_day: Joi.boolean().optional(),
+  company_overage_enforced: Joi.boolean().optional(),
+  company_negotiated_enabled: Joi.boolean().optional(),
+  company_initial_delivery: Joi.number().min(0).allow(null).optional(),
+  company_empty_and_redeliver: Joi.number().min(0).allow(null).optional(),
+  company_included_days_per_rotation: Joi.number().min(0).allow(null).optional(),
+  company_included_tons_per_rotation: Joi.number().min(0).allow(null).optional(),
+  company_negotiated_overage_per_ton: Joi.number().min(0).allow(null).optional(),
+  company_negotiated_extra_day: Joi.number().min(0).allow(null).optional(),
   size: Joi.string()
-    .required()
+    .optional()
     .valid("6-8", "10-12", "14-16", "18-20", "30", "40"),
   price: Joi.number(),
   description: Joi.string(),
@@ -341,4 +367,60 @@ export const updateTreeRemovalSchema = Joi.object({
   // Status & Metadata
   status: Joi.string().valid("active", "deactive").default("active").optional(),
   disposal_notes: Joi.string().allow("", null).optional(),
+});
+
+const pricingRateSchema = Joi.object({
+  size: Joi.string().trim().required(),
+  sizeLabel: Joi.string().trim().allow("", null).optional(),
+  materialType: Joi.string().trim().allow("", null).default("standard"),
+  oneDayPrice: Joi.number().min(0).required(),
+  threeDayPrice: Joi.number().min(0).required(),
+  sevenDayPrice: Joi.number().min(0).required(),
+  includedTons: Joi.number().min(0).default(0),
+  overagePerTon: Joi.number().min(0).default(0),
+  extraDay: Joi.number().min(0).default(0),
+  providerPayout: Joi.number().min(0).allow(null).optional(),
+  binsAppFee: Joi.number().min(0).max(100).allow(null).optional(),
+});
+
+const geoSchema = Joi.object({
+  center: Joi.object({
+    type: Joi.string().valid("Point").default("Point"),
+    coordinates: Joi.array().items(Joi.number()).length(2).required(),
+  }).optional(),
+  radiusMiles: Joi.number().min(0).allow(null).optional(),
+})
+  .optional()
+  .allow(null);
+
+export const createPricingZoneSchema = Joi.object({
+  state: Joi.string().trim().required(),
+  stateCode: Joi.string().trim().allow("", null).optional(),
+  market: Joi.string().trim().required(),
+  /** Alias of market — optional; server always sets zone = market */
+  zone: Joi.string().trim().optional(),
+  description: Joi.string().trim().allow("", null).optional(),
+  geo: geoSchema,
+  rates: Joi.array().items(pricingRateSchema).min(1).required(),
+  status: Joi.string().valid("active", "deactive", "inactive").default("active"),
+  /** Server may set this; clients should not create extra global rows */
+  isGlobal: Joi.boolean().optional(),
+}).options({ stripUnknown: true });
+
+export const updatePricingZoneSchema = Joi.object({
+  state: Joi.string().trim().optional(),
+  stateCode: Joi.string().trim().allow("", null).optional(),
+  market: Joi.string().trim().optional(),
+  zone: Joi.string().trim().optional(),
+  description: Joi.string().trim().allow("", null).optional(),
+  geo: geoSchema,
+  rates: Joi.array().items(pricingRateSchema).min(1).optional(),
+  status: Joi.string().valid("active", "deactive", "inactive").optional(),
+  isGlobal: Joi.boolean().optional(),
+})
+  .min(1)
+  .options({ stripUnknown: true });
+
+export const updatePricingZoneStatusSchema = Joi.object({
+  status: Joi.string().valid("active", "inactive", "deactive").required(),
 });

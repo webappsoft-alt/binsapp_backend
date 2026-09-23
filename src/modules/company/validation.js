@@ -138,6 +138,11 @@ export const quoteValidation = Joi.object({
   portaPottyId: Joi.string().optional().allow(null, ""),
   zip: Joi.string().optional().allow("", null),
   regionName: Joi.string().optional().allow("", null),
+  /** initial = first drop; empty_redeliver = exchange / empty & return */
+  rotationType: Joi.string()
+    .valid("initial", "empty_redeliver")
+    .optional()
+    .default("initial"),
   location: Joi.object({
     type: Joi.string().valid("Point").optional(),
     coordinates: Joi.array().items(Joi.number()).optional(),
@@ -207,5 +212,21 @@ export const companyConfigValidation = Joi.object({
   requiredDocs: Joi.object({
     w9: Joi.boolean().optional(),
     coi: Joi.boolean().optional(),
+  }).optional(),
+  negotiatedRotationTerms: Joi.object({
+    enabled: Joi.boolean().optional(),
+    includedDaysPerRotation: Joi.number().min(0).allow(null).optional(),
+    includedTonsPerRotation: Joi.number().min(0).allow(null).optional(),
+    overagePerTon: Joi.number().min(0).allow(null).optional(),
+    extraDay: Joi.number().min(0).allow(null).optional(),
+    sizes: Joi.array()
+      .items(
+        Joi.object({
+          size: Joi.string().valid("10", "15", "20", "30", "40").required(),
+          initialDelivery: Joi.number().min(0).allow(null).optional(),
+          emptyAndRedeliver: Joi.number().min(0).allow(null).optional(),
+        }),
+      )
+      .optional(),
   }).optional(),
 }).options({ stripUnknown: true });

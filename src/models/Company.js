@@ -138,6 +138,33 @@ const companySchema = new Schema(
       title: { type: String, default: "N/A" },
     },
     pricingPlan: { type: pricingPlanSchema, default: undefined },
+
+    /**
+     * Optional builder negotiated rotation terms.
+     * When enabled, commercial quotes prefer these over blanket/regional rate cards
+     * for Initial Delivery vs Empty & Redeliver, plus included days/tons / overage / extra day.
+     */
+    negotiatedRotationTerms: {
+      enabled: { type: Boolean, default: false },
+      includedDaysPerRotation: { type: Number, default: null },
+      includedTonsPerRotation: { type: Number, default: null },
+      overagePerTon: { type: Number, default: null },
+      extraDay: { type: Number, default: null },
+      sizes: {
+        type: [
+          {
+            size: {
+              type: String,
+              enum: ["10", "15", "20", "30", "40"],
+              required: true,
+            },
+            initialDelivery: { type: Number, default: null },
+            emptyAndRedeliver: { type: Number, default: null },
+          },
+        ],
+        default: [],
+      },
+    },
   },
   {
     timestamps: true,

@@ -1,4 +1,5 @@
 import Company from "../models/Company.js";
+import CommercialGlobalPricing from "../models/CommercialGlobalPricing.js";
 import Dumbster from "../models/Dumbster.js";
 import JobSite from "../models/JobSites.js";
 import { BadRequestError, NotFoundError } from "./apiError.js";
@@ -8,8 +9,8 @@ export const COMMERCIAL_SIZES = ["10", "15", "20", "30", "40"];
 /** Map commercial size labels onto Dumbster.size enum values. */
 export function commercialSizeToDumbsterSizes(size) {
   const key = String(size || "").replace(/\D/g, "");
-  if (key === "10") return ["10"];
-  if (key === "15") return ["15"];
+  if (key === "10") return ["10-12", "10"];
+  if (key === "15") return ["14-16", "15"];
   if (key === "20") return ["18-20", "20"];
   if (key === "30") return ["30"];
   if (key === "40") return ["40"];
@@ -21,8 +22,8 @@ export function normalizeCommercialSize(size) {
   const raw = String(size).trim();
   if (COMMERCIAL_SIZES.includes(raw)) return raw;
   if (raw === "18-20" || raw.startsWith("18") || raw.includes("20")) return "20";
+  if (raw === "14-16" || raw.startsWith("14") || raw.includes("15")) return "15";
   if (raw.includes("10") && !raw.includes("100")) return "10";
-  if (raw.includes("15")) return "15";
   if (raw.includes("30")) return "30";
   if (raw.includes("40")) return "40";
   const digits = raw.replace(/\D/g, "");
@@ -113,26 +114,55 @@ function rateCardFromDumbster(dumpster) {
     Number(dumpster.seven_days_price) ||
     0;
   const derived = deriveExtendedPackagePrices(threeDayPrice, sevenDayPrice);
+  const fourteen =
+    Number(dumpster.company_fourteen_days_price) > 0
+      ? Number(dumpster.company_fourteen_days_price)
+      : derived.fourteenDayPrice;
+  const thirty =
+    Number(dumpster.company_thirty_days_price) > 0
+      ? Number(dumpster.company_thirty_days_price)
+      : derived.thirtyDayPrice;
   return {
     threeDayPrice,
     sevenDayPrice,
-    fourteenDayPrice: derived.fourteenDayPrice,
-    thirtyDayPrice: derived.thirtyDayPrice,
-    enableFourteenDay: derived.enableFourteenDay,
-    enableThirtyDay: derived.enableThirtyDay,
+    fourteenDayPrice: fourteen,
+    thirtyDayPrice: thirty,
+    enableFourteenDay:
+      dumpster.company_enable_fourteen_day != null
+        ? Boolean(dumpster.company_enable_fourteen_day)
+        : derived.enableFourteenDay,
+    enableThirtyDay:
+      dumpster.company_enable_thirty_day != null
+        ? Boolean(dumpster.company_enable_thirty_day)
+        : derived.enableThirtyDay,
     perDiemRate:
       Number(dumpster.company_per_dim_rate) ||
       Number(dumpster.per_dim_rate) ||
       Number(dumpster.day_price_km) ||
       0,
     includedTons: Number(dumpster.tons) || 0,
-    overagePerTon: 0,
-    overageEnforced: true,
+    overagePerTon: Number(dumpster.overagePerTon) || 0,
+    overageEnforced:
+      dumpster.company_overage_enforced != null
+        ? Boolean(dumpster.company_overage_enforced)
+        : true,
   };
 }
 
-/** Build blanket 20/30/40 rate cards from active dumpster catalog. */
-export async function buildDefaultCommercialRateCards() {
+/** True when a rate card has usable commercial prices. */
+export function rateCardHasPricing(card) {
+  if (!card) return false;
+  return (
+    Number(card.threeDayPrice) > 0 ||
+    Number(card.sevenDayPrice) > 0 ||
+    Number(card.fourteenDayPrice) > 0 ||
+    Number(card.thirtyDayPrice) > 0 ||
+    Number(card.perDiemRate) > 0
+  );
+}
+
+/** Build blanket rate cards from active dumpster catalog (seed only). */
+export async function buildDefaultCommercialRateCardsFromDumpsters() {
   const dumpsters = await Dumbster.find({ status: "active" })
     .sort({ updatedAt: -1 })
     .lean();
@@ -148,6 +178,130 @@ export async function buildDefaultCommercialRateCards() {
     size,
     ...rateCardFromDumbster(bySize[size]),
   }));
+}
+
+/**
+ * Ensure singleton Global Commercial Pricing exists.
+ * Seeds once from dumpster company_* / base catalog (does not keep syncing).
+ */
+export async function ensureGlobalCommercialPricing() {
+  let doc = await CommercialGlobalPricing.findOne({ key: "default" });
+  if (doc && Array.isArray(doc.rateCards) && doc.rateCards.length) {
+    return doc;
+  }
+
+  const seeded = await buildDefaultCommercialRateCardsFromDumpsters();
+  if (doc) {
+    doc.rateCards = seeded.map((c) => fillDerivedPackagePrices(c));
+    await doc.save();
+    return doc;
+  }
+
+  doc = await CommercialGlobalPricing.create({
+    key: "default",
+    rateCards: seeded.map((c) => fillDerivedPackagePrices(c)),
+  });
+  return doc;
+}
+
+export async function getGlobalCommercialPricing() {
+  const doc = await ensureGlobalCommercialPricing();
+  return typeof doc.toObject === "function" ? doc.toObject() : doc;
+}
+
+export async function updateGlobalCommercialPricing(
+  rateCards = [],
+  negotiatedRotationTerms = undefined,
+) {
+  const normalized = COMMERCIAL_SIZES.map((size) => {
+    const found = (rateCards || []).find(
+      (c) => normalizeCommercialSize(c.size) === size,
+    );
+    const filled = fillDerivedPackagePrices({
+      size,
+      ...(found || emptyRateCard()),
+    });
+    return {
+      ...filled,
+      enableFourteenDay:
+        found?.enableFourteenDay != null
+          ? Boolean(found.enableFourteenDay)
+          : filled.enableFourteenDay,
+      enableThirtyDay:
+        found?.enableThirtyDay != null
+          ? Boolean(found.enableThirtyDay)
+          : filled.enableThirtyDay,
+      overageEnforced:
+        found?.overageEnforced != null
+          ? Boolean(found.overageEnforced)
+          : filled.overageEnforced !== false,
+    };
+  });
+
+  const $set = { rateCards: normalized };
+  if (negotiatedRotationTerms !== undefined) {
+    const raw = negotiatedRotationTerms || {};
+    $set.negotiatedRotationTerms = {
+      enabled: Boolean(raw.enabled),
+      includedDaysPerRotation:
+        raw.includedDaysPerRotation == null || raw.includedDaysPerRotation === ""
+          ? null
+          : Number(raw.includedDaysPerRotation),
+      includedTonsPerRotation:
+        raw.includedTonsPerRotation == null || raw.includedTonsPerRotation === ""
+          ? null
+          : Number(raw.includedTonsPerRotation),
+      overagePerTon:
+        raw.overagePerTon == null || raw.overagePerTon === ""
+          ? null
+          : Number(raw.overagePerTon),
+      extraDay:
+        raw.extraDay == null || raw.extraDay === ""
+          ? null
+          : Number(raw.extraDay),
+      sizes: COMMERCIAL_SIZES.map((size) => {
+        const row = (raw.sizes || []).find(
+          (s) => normalizeCommercialSize(s.size) === size,
+        );
+        return {
+          size,
+          initialDelivery:
+            row?.initialDelivery == null || row.initialDelivery === ""
+              ? null
+              : Number(row.initialDelivery),
+          emptyAndRedeliver:
+            row?.emptyAndRedeliver == null || row.emptyAndRedeliver === ""
+              ? null
+              : Number(row.emptyAndRedeliver),
+        };
+      }),
+    };
+  }
+
+  const doc = await CommercialGlobalPricing.findOneAndUpdate(
+    { key: "default" },
+    { $set },
+    { new: true, upsert: true, setDefaultsOnInsert: true },
+  );
+  return typeof doc.toObject === "function" ? doc.toObject() : doc;
+}
+
+/** Preferred commercial defaults: Global config (not dumpster create). */
+export async function buildDefaultCommercialRateCards() {
+  const global = await ensureGlobalCommercialPricing();
+  const cards = global?.rateCards || [];
+  if (cards.some((c) => rateCardHasPricing(c))) {
+    return COMMERCIAL_SIZES.map((size) => {
+      const found = cards.find(
+        (c) => normalizeCommercialSize(c.size) === size,
+      );
+      return fillDerivedPackagePrices({
+        size,
+        ...(found || emptyRateCard()),
+      });
+    });
+  }
+  return buildDefaultCommercialRateCardsFromDumpsters();
 }
 
 export function rateCardsNeedDerivedFill(cards = []) {
@@ -249,7 +403,9 @@ function resolveRateCardFromPlan(plan, { size, zip, regionName, coordinates }) {
 
 /**
  * Authoritative commercial quote.
- * Prefers Company.pricingPlan; falls back to Dumbster company_* fields.
+ * Priority: negotiated flat fees → company pricingPlan → Market Pricing zone
+ * → Global Commercial → dumpster company_* / catalog.
+ * When negotiatedRotationTerms.enabled, prefers Initial Delivery / Empty & Redeliver fees.
  */
 export async function quoteCommercialDumpster({
   companyId,
@@ -261,6 +417,7 @@ export async function quoteCommercialDumpster({
   zip,
   regionName,
   location,
+  rotationType = "initial",
 } = {}) {
   if (!companyId) {
     throw new BadRequestError("companyId is required for a commercial quote");
@@ -297,7 +454,73 @@ export async function quoteCommercialDumpster({
     throw new BadRequestError("A commercial dumpster size (20/30/40) is required");
   }
 
-  const days = Math.max(1, Number(numDays) || Number(jobSite?.num_days) || 3);
+  if (!dumpster) {
+    const sizeEnums = commercialSizeToDumbsterSizes(resolvedSize);
+    dumpster = await Dumbster.findOne({
+      size: { $in: sizeEnums },
+      status: "active",
+    })
+      .sort({ updatedAt: -1 })
+      .lean();
+  }
+
+  const terms =
+    company.negotiatedRotationTerms?.enabled
+      ? company.negotiatedRotationTerms
+      : null;
+  let termsEnabled = Boolean(terms?.enabled);
+
+  // Company negotiate off → Global Commercial negotiated defaults
+  let globalNegotiated = null;
+  if (!termsEnabled) {
+    try {
+      const globalDoc = await ensureGlobalCommercialPricing();
+      if (globalDoc?.negotiatedRotationTerms?.enabled) {
+        globalNegotiated = globalDoc.negotiatedRotationTerms;
+        termsEnabled = true;
+      }
+    } catch {
+      /* optional */
+    }
+  }
+
+  // Still off → this dumpster's company_negotiated_* keys
+  let dumpsterNegotiated = null;
+  if (!termsEnabled && dumpster?.company_negotiated_enabled) {
+    dumpsterNegotiated = {
+      enabled: true,
+      includedDaysPerRotation: dumpster.company_included_days_per_rotation,
+      includedTonsPerRotation: dumpster.company_included_tons_per_rotation,
+      overagePerTon: dumpster.company_negotiated_overage_per_ton,
+      extraDay: dumpster.company_negotiated_extra_day,
+      sizes: [
+        {
+          size: resolvedSize,
+          initialDelivery: dumpster.company_initial_delivery,
+          emptyAndRedeliver: dumpster.company_empty_and_redeliver,
+        },
+      ],
+    };
+    termsEnabled = true;
+  }
+
+  const activeTerms = terms || globalNegotiated || dumpsterNegotiated;
+  const sizeTerms = termsEnabled
+    ? (activeTerms.sizes || []).find((s) => String(s.size) === String(resolvedSize))
+    : null;
+
+  const negotiatedDays =
+    termsEnabled && activeTerms?.includedDaysPerRotation != null
+      ? Number(activeTerms.includedDaysPerRotation)
+      : null;
+
+  const days = Math.max(
+    1,
+    Number(numDays) ||
+      negotiatedDays ||
+      Number(jobSite?.num_days) ||
+      3,
+  );
   const qty = Math.max(
     1,
     Number(quantity) || Number(jobSite?.quantity) || 1,
@@ -316,16 +539,101 @@ export async function quoteCommercialDumpster({
     coordinates,
   });
 
-  if (!dumpster) {
-    const sizeEnums = commercialSizeToDumbsterSizes(resolvedSize);
-    dumpster = await Dumbster.findOne({
-      size: { $in: sizeEnums },
-      status: "active",
-    })
-      .sort({ updatedAt: -1 })
-      .lean();
+  // Company plan only counts as override when that size actually has prices
+  if (resolved && !rateCardHasPricing(resolved.card)) {
+    resolved = null;
   }
 
+  // No company override → Market Pricing zone (same rates residential & commercial)
+  if (!resolved) {
+    try {
+      const {
+        findMatchingPricingZone,
+        getGlobalPricingZone,
+        findRateForSize,
+      } = await import("./dumpsterZonePricing.js");
+
+      const coords = Array.isArray(coordinates) ? coordinates : null;
+      const loc = {
+        zip: resolvedZip,
+        state: company.state || "",
+        stateCode: company.state || "",
+        city: company.city || jobSite?.city || "",
+        lng: coords?.[0] != null ? Number(coords[0]) : null,
+        lat: coords?.[1] != null ? Number(coords[1]) : null,
+      };
+      const geoZone = await findMatchingPricingZone(loc);
+      const zone = geoZone || (await getGlobalPricingZone());
+      if (zone) {
+        const sizeEnums = commercialSizeToDumbsterSizes(resolvedSize);
+        let zoneRate = null;
+        for (const sz of sizeEnums) {
+          zoneRate = findRateForSize(zone, sz);
+          if (zoneRate) break;
+        }
+        if (
+          zoneRate &&
+          (Number(zoneRate.threeDayPrice) > 0 ||
+            Number(zoneRate.sevenDayPrice) > 0 ||
+            Number(zoneRate.oneDayPrice) > 0)
+        ) {
+          const three =
+            Number(zoneRate.threeDayPrice) ||
+            Number(zoneRate.oneDayPrice) ||
+            0;
+          const seven =
+            Number(zoneRate.sevenDayPrice) ||
+            Number(zoneRate.threeDayPrice) ||
+            0;
+          resolved = {
+            card: fillDerivedPackagePrices({
+              size: resolvedSize,
+              threeDayPrice: three,
+              sevenDayPrice: seven,
+              perDiemRate: Number(zoneRate.extraDay) || 0,
+              includedTons:
+                Number(zoneRate.includedTons) ||
+                Number(dumpster?.tons) ||
+                0,
+              overagePerTon:
+                Number(zoneRate.overagePerTon) ||
+                Number(dumpster?.overagePerTon) ||
+                0,
+              overageEnforced: true,
+            }),
+            region: null,
+            source: zone.isGlobal ? "market_global" : "market_zone",
+            market: {
+              id: zone._id,
+              state: zone.state,
+              market: zone.market,
+              isGlobal: Boolean(zone.isGlobal),
+            },
+          };
+        }
+      }
+    } catch (err) {
+      // Market pricing optional — fall through to commercial global / dumpster
+      console.error("commercial market zone resolve failed:", err?.message || err);
+    }
+  }
+
+  // Still nothing → Global Commercial Pricing (synced from dumpster commercial rates)
+  if (!resolved) {
+    const globalDoc = await ensureGlobalCommercialPricing();
+    const globalCard = (globalDoc.rateCards || []).find(
+      (c) => normalizeCommercialSize(c.size) === resolvedSize,
+    );
+    if (rateCardHasPricing(globalCard)) {
+      resolved = {
+        card: { size: resolvedSize, ...fillDerivedPackagePrices(globalCard) },
+        region: null,
+        source: "commercial_global",
+      };
+    }
+  }
+
+  // Last resort: dumpster company_* / base catalog
   if (!resolved) {
     const fallbackCard = rateCardFromDumbster(dumpster);
     resolved = {
@@ -335,11 +643,70 @@ export async function quoteCommercialDumpster({
     };
   }
 
-  const packageQuote = pickPackage(resolved.card, days);
-  const unitPackagePrice = packageQuote.price;
-  const unitPerDiemCharge = packageQuote.perDiemCharge;
+  const isEmptyRedeliver =
+    rotationType === "empty_redeliver" ||
+    rotationType === "swap" ||
+    rotationType === "exchange";
+
+  let negotiatedFlat = null;
+  if (termsEnabled && sizeTerms) {
+    if (isEmptyRedeliver && sizeTerms.emptyAndRedeliver != null) {
+      negotiatedFlat = Number(sizeTerms.emptyAndRedeliver);
+    } else if (!isEmptyRedeliver && sizeTerms.initialDelivery != null) {
+      negotiatedFlat = Number(sizeTerms.initialDelivery);
+    }
+  }
+
+  let unitPackagePrice;
+  let unitPerDiemCharge;
+  let packageQuote;
+  let quoteSource = resolved.source;
+
+  if (negotiatedFlat != null && !Number.isNaN(negotiatedFlat)) {
+    const includedDays = negotiatedDays || days;
+    const extraDayRate =
+      activeTerms?.extraDay != null
+        ? Number(activeTerms.extraDay)
+        : Number(resolved.card.perDiemRate) || 0;
+    const extraDays = Math.max(0, days - includedDays);
+    unitPackagePrice = negotiatedFlat;
+    unitPerDiemCharge = extraDays * extraDayRate;
+    packageQuote = {
+      packageDays: includedDays,
+      price: negotiatedFlat,
+      extraDays,
+      perDiemCharge: unitPerDiemCharge,
+    };
+    quoteSource = isEmptyRedeliver
+      ? "negotiated_empty_redeliver"
+      : "negotiated_initial_delivery";
+  } else {
+    packageQuote = pickPackage(resolved.card, days);
+    unitPackagePrice = packageQuote.price;
+    unitPerDiemCharge = packageQuote.perDiemCharge;
+    // Negotiated extra-day rate can still override per-diem when set
+    if (termsEnabled && activeTerms?.extraDay != null) {
+      const extraDays = packageQuote.extraDays || 0;
+      unitPerDiemCharge = extraDays * Number(activeTerms.extraDay);
+      packageQuote = { ...packageQuote, perDiemCharge: unitPerDiemCharge };
+    }
+  }
+
   const unitTotal = unitPackagePrice + unitPerDiemCharge;
   const total = Math.round(unitTotal * qty * 100) / 100;
+
+  const includedTons =
+    termsEnabled && activeTerms?.includedTonsPerRotation != null
+      ? Number(activeTerms.includedTonsPerRotation)
+      : Number(resolved.card.includedTons) || 0;
+  const overagePerTon =
+    termsEnabled && activeTerms?.overagePerTon != null
+      ? Number(activeTerms.overagePerTon)
+      : Number(resolved.card.overagePerTon) || 0;
+  const perDiemRate =
+    termsEnabled && activeTerms?.extraDay != null
+      ? Number(activeTerms.extraDay)
+      : Number(resolved.card.perDiemRate) || 0;
 
   return {
     companyId: company._id.toString(),
@@ -347,25 +714,34 @@ export async function quoteCommercialDumpster({
     size: resolvedSize,
     numDays: days,
     quantity: qty,
+    rotationType: isEmptyRedeliver ? "empty_redeliver" : "initial",
     planType: company.pricingPlan?.planType || null,
     region: resolved.region
       ? { name: resolved.region.name, zips: resolved.region.zips || [] }
       : null,
-    source: resolved.source,
+    source: quoteSource,
+    market: resolved.market || null,
+    negotiatedTermsApplied: Boolean(
+      negotiatedFlat != null ||
+        (termsEnabled &&
+          (activeTerms?.extraDay != null ||
+            activeTerms?.overagePerTon != null ||
+            activeTerms?.includedTonsPerRotation != null)),
+    ),
     dumbsterId: dumpster?._id?.toString() || null,
     breakdown: {
       packageDays: packageQuote.packageDays,
       packagePrice: unitPackagePrice,
       extraDays: packageQuote.extraDays,
-      perDiemRate: Number(resolved.card.perDiemRate) || 0,
+      perDiemRate,
       perDiemCharge: unitPerDiemCharge,
       quantity: qty,
       unitTotal,
       total,
     },
     tonnage: {
-      includedTons: Number(resolved.card.includedTons) || 0,
-      overagePerTon: Number(resolved.card.overagePerTon) || 0,
+      includedTons,
+      overagePerTon,
       overageEnforced: Boolean(resolved.card.overageEnforced),
     },
     paymentMethod: company.paymentMethod || "card",
