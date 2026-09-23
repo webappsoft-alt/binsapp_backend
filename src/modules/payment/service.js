@@ -1,5 +1,5 @@
 import logger from "../../config/logger.js";
-import User from "../../models/user.js";
+import User from "../../models/User.js";
 import Stripe from "stripe";
 import config from "../../config/env.js";
 import {

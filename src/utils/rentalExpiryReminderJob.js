@@ -1,6 +1,6 @@
 import cron from "node-cron";
 import Order from "../models/Order.js";
-import User from "../models/user.js";
+import User from "../models/User.js";
 import { sendNotification } from "./notifications.js";
 import { orderMessages } from "./orderMessages.js";
 import logger from "../config/logger.js";

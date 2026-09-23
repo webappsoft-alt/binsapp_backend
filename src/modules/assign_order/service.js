@@ -11,7 +11,7 @@ import { generateAccessToken } from "../../utils/Generator.js";
 import logger from "../../config/logger.js";
 import { connectedUsers, io } from "../../socket/socket.js";
 import Order from "../../models/Order.js";
-import User from "../../models/user.js";
+import User from "../../models/User.js";
 import twilio from "twilio";
 import Dustbin from "../../models/Dustbin.js";
 import JunkRemoval from "../../models/JunkRemoval.js";

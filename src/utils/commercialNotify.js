@@ -1,4 +1,4 @@
-import User from "../models/user.js";
+import User from "../models/User.js";
 import { sendNotification } from "./notifications.js";
 import { buttonTemplate } from "./emailTemplate.js";
 import logger from "../config/logger.js";

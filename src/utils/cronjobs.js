@@ -1,6 +1,6 @@
 import cron from "node-cron";
 import Order from "../models/Order.js";
-import User from "../models/user.js";
+import User from "../models/User.js";
 import TransactionModel from "../models/Transaction.js";
 import logger from "../config/logger.js";
 import { scheduleRentalExpiryReminders } from "./rentalExpiryReminderJob.js";

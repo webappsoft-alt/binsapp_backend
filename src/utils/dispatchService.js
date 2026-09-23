@@ -1,5 +1,5 @@
 import { dispatchQueue } from "./bullmq.js";
-import User from "../models/user.js";
+import User from "../models/User.js";
 import Tier from "../models/Tier.js";
 import logger from "../config/logger.js";
 import { mapBrandedBoostForOperators } from "./growthEngine.js";

@@ -4,7 +4,7 @@ import {
   BadRequestError,
   ForbiddenError,
 } from "../../utils/apiError.js";
-import User from "../../models/user.js";
+import User from "../../models/User.js";
 import { sendNotification } from "../../utils/notifications.js";
 import Support from "../../models/Support.js";
 import { generateOTP } from "../../utils/Generator.js";

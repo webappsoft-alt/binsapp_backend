@@ -316,7 +316,7 @@ async function phaseC() {
 
   mongoose.set("bufferCommands", true);
 
-  const User = (await import("../src/models/user.js")).default;
+  const User = (await import("../src/models/User.js")).default;
   const Order = (await import("../src/models/Order.js")).default;
   const Dumbster = (await import("../src/models/Dumbster.js")).default;
   const Dustbin = (await import("../src/models/Dustbin.js")).default;

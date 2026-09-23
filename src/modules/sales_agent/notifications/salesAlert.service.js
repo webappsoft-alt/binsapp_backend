@@ -1,5 +1,5 @@
 import Notification from "../../../models/Notification.js";
-import User from "../../../models/user.js";
+import User from "../../../models/User.js";
 import { io } from "../../../socket/socket.js";
 import { sendEmail } from "../../../utils/emailHelper.js";
 import { logger } from "../../../config/logger.js";

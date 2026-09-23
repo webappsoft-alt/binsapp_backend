@@ -3,7 +3,7 @@ import OperatorGrowthProfile from "../../models/OperatorGrowthProfile.js";
 import FleetCatalogItem from "../../models/FleetCatalogItem.js";
 import FinancingApplication from "../../models/FinancingApplication.js";
 import Dumbster from "../../models/Dumbster.js";
-import User from "../../models/user.js";
+import User from "../../models/User.js";
 import {
   BadRequestError,
   ForbiddenError,

@@ -18,7 +18,7 @@ import {
 } from "../../utils/emailTemplate.js";
 import JobEvent from "../../models/JobEvent.js";
 import { ScoreEngine } from "../scoring/scoreEngine.js";
-import User from "../../models/user.js";
+import User from "../../models/User.js";
 import logger from "../../config/logger.js";
 import DispatchService from "../../utils/dispatchService.js";
 import { cancelOrderExpiry } from "../../utils/orderExpiryService.js";

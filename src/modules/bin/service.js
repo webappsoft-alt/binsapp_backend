@@ -1,5 +1,5 @@
 import Dustbin from "../../models/Dustbin.js";
-import User from "../../models/user.js";
+import User from "../../models/User.js";
 import logger from "../../config/logger.js";
 import Support from "../../models/Support.js";
 import {

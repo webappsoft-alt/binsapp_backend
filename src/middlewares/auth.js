@@ -1,7 +1,7 @@
 import jwt from "jsonwebtoken";
 import config from "../config/env.js";
 import { UnauthorizedError, ForbiddenError } from "../utils/apiError.js";
-import User from "../models/user.js";
+import User from "../models/User.js";
 import { AssignOrder, SubUserDetail } from "../models/AssignOrder.js";
 
 /**

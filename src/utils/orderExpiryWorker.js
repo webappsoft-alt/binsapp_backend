@@ -1,6 +1,6 @@
 import { createWorker } from "./bullmq.js";
 import Order from "../models/Order.js";
-import User from "../models/user.js";
+import User from "../models/User.js";
 import DispatchService from "./dispatchService.js";
 import { releaseHold } from "./paymentHold.js";
 import { sendNotification } from "./notifications.js";

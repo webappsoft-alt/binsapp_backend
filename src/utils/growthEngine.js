@@ -2,7 +2,7 @@ import GrowthProgramConfig from "../models/GrowthProgramConfig.js";
 import OperatorGrowthProfile from "../models/OperatorGrowthProfile.js";
 import Order from "../models/Order.js";
 import JobEvent from "../models/JobEvent.js";
-import User from "../models/user.js";
+import User from "../models/User.js";
 import Dustbin from "../models/Dustbin.js";
 import Dumbster from "../models/Dumbster.js";
 import Company from "../models/Company.js";

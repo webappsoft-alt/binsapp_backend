@@ -1,6 +1,6 @@
 import JobEvent from "../../models/JobEvent.js";
 import SystemSettings from "../../models/SystemSettings.js";
-import User from "../../models/user.js";
+import User from "../../models/User.js";
 import mongoose from "mongoose";
 import logger from "../../config/logger.js";
 import Tier from "../../models/Tier.js";

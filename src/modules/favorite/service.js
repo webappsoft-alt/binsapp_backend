@@ -1,5 +1,5 @@
 import Favorite from "../../models/Favorite.js";
-import User from "../../models/user.js";
+import User from "../../models/User.js";
 import { NotFoundError } from "../../utils/apiError.js";
 
 class FavoriteService {

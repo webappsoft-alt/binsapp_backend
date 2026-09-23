@@ -1,7 +1,7 @@
 import Tier from "../../models/Tier.js";
 import { NotFoundError } from "../../utils/apiError.js";
 import flattenObject from "../../utils/flattenObject.js";
-import User from "../../models/user.js";
+import User from "../../models/User.js";
 
 class TierService {
   async createTier(tierData) {
