@@ -26,6 +26,7 @@ import builderOfferRoutes, {
 // image uploading
 import admin from "firebase-admin";
 import sharp from "sharp";
+import heicConvert from "heic-convert";
 import { fileURLToPath } from "url";
 import mime from "mime-types";
 import { dirname, join } from "path";
@@ -317,4 +318,184 @@ app.post("/upload-file", handleSingleUpload("file"), async (req, res) => {
       .json({ message: "Error in uploading. Try again later.", error });
   }
 });
+
+const ALLOWED_PREVIEW_HOSTS = new Set([
+  "storage.googleapis.com",
+  "firebasestorage.googleapis.com",
+]);
+
+const HEIC_FTYP_BRANDS = new Set([
+  "heic",
+  "heif",
+  "mif1",
+  "msf1",
+  "heix",
+  "hevc",
+]);
+
+function bufferLooksLikeHeic(buf) {
+  if (!buf || buf.length < 12) return false;
+  const ftyp = buf.toString("ascii", 4, 8);
+  if (ftyp !== "ftyp") return false;
+  const brand = buf.toString("ascii", 8, 12).toLowerCase();
+  return HEIC_FTYP_BRANDS.has(brand);
+}
+
+function extractGcsObjectPath(rawUrl) {
+  try {
+    const u = new URL(rawUrl);
+    if (!ALLOWED_PREVIEW_HOSTS.has(u.hostname)) return null;
+
+    // https://storage.googleapis.com/{bucket}/{object}
+    if (u.hostname === "storage.googleapis.com") {
+      const parts = u.pathname.replace(/^\//, "").split("/");
+      const bucketName = parts.shift();
+      if (!bucketName || bucketName !== bucket.name) return null;
+      return decodeURIComponent(parts.join("/"));
+    }
+
+    // https://firebasestorage.googleapis.com/v0/b/{bucket}/o/{encodedObject}
+    if (u.hostname === "firebasestorage.googleapis.com") {
+      const match = u.pathname.match(/\/v0\/b\/([^/]+)\/o\/(.+)/);
+      if (!match) return null;
+      if (match[1] !== bucket.name) return null;
+      return decodeURIComponent(match[2]);
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Proxy + normalize document images for admin preview.
+ * HEIC/HEIF (and other camera formats browsers can't render) → JPEG via sharp.
+ * GET /api/preview-file?url=<encoded GCS url>
+ */
+app.get("/preview-file", async (req, res) => {
+  try {
+    const rawUrl = String(req.query.url || "").trim();
+    if (!rawUrl) {
+      return res.status(400).json({ message: "url query param is required" });
+    }
+
+    let parsed;
+    try {
+      parsed = new URL(rawUrl);
+    } catch {
+      return res.status(400).json({ message: "Invalid url" });
+    }
+
+    if (!ALLOWED_PREVIEW_HOSTS.has(parsed.hostname)) {
+      return res.status(403).json({ message: "URL host not allowed" });
+    }
+
+    const objectPath = extractGcsObjectPath(rawUrl);
+    let buffer;
+    let contentTypeHint = "";
+
+    if (objectPath) {
+      const gcsFile = bucket.file(objectPath);
+      const [meta] = await gcsFile.getMetadata().catch(() => [null]);
+      contentTypeHint = String(meta?.contentType || "").toLowerCase();
+      const [downloaded] = await gcsFile.download();
+      buffer = downloaded;
+    } else {
+      // Fallback HTTP fetch for odd but still-allowed host shapes
+      const upstream = await fetch(rawUrl);
+      if (!upstream.ok) {
+        return res
+          .status(upstream.status)
+          .json({ message: `Upstream fetch failed (${upstream.status})` });
+      }
+      contentTypeHint = String(
+        upstream.headers.get("content-type") || "",
+      ).toLowerCase();
+      buffer = Buffer.from(await upstream.arrayBuffer());
+    }
+
+    const pathLower = parsed.pathname.toLowerCase();
+    const isHeic =
+      /\.(heic|heif)$/i.test(pathLower) ||
+      contentTypeHint.includes("heic") ||
+      contentTypeHint.includes("heif") ||
+      bufferLooksLikeHeic(buffer);
+
+    const isPdf =
+      pathLower.endsWith(".pdf") || contentTypeHint.includes("application/pdf");
+
+    if (isPdf) {
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Cache-Control", "private, max-age=300");
+      return res.send(buffer);
+    }
+
+    // HEIC/HEIF: sharp often lacks HEVC decode; heic-convert (libheif-js) handles it
+    if (isHeic) {
+      try {
+        const jpegBuf = await heicConvert({
+          buffer,
+          format: "JPEG",
+          quality: 0.9,
+        });
+        res.setHeader("Content-Type", "image/jpeg");
+        res.setHeader("Cache-Control", "private, max-age=300");
+        res.setHeader("X-Preview-Converted", "heic-convert");
+        return res.send(Buffer.from(jpegBuf));
+      } catch (heicErr) {
+        console.warn("preview-file heic-convert failed:", heicErr?.message);
+      }
+    }
+
+    if (isHeic || contentTypeHint.startsWith("image/") || !contentTypeHint) {
+      try {
+        const image = sharp(buffer, {
+          limitInputPixels: false,
+          failOn: "truncated",
+        });
+        const metadata = await image.metadata();
+        let pipeline = image.rotate();
+        let outType = "image/jpeg";
+        let outBuf;
+
+        if (metadata.hasAlpha) {
+          outBuf = await pipeline.png({ quality: 90 }).toBuffer();
+          outType = "image/png";
+        } else {
+          outBuf = await pipeline.jpeg({ quality: 90 }).toBuffer();
+          outType = "image/jpeg";
+        }
+
+        res.setHeader("Content-Type", outType);
+        res.setHeader("Cache-Control", "private, max-age=300");
+        res.setHeader("X-Preview-Converted", isHeic ? "heic-sharp" : "image");
+        return res.send(outBuf);
+      } catch (convErr) {
+        console.warn("preview-file sharp convert failed:", convErr?.message);
+      }
+    }
+
+    // Do not return raw HEIC — browsers cannot display it
+    if (isHeic) {
+      return res.status(422).json({
+        message:
+          "HEIC could not be converted for preview. Download the file instead.",
+      });
+    }
+
+    res.setHeader(
+      "Content-Type",
+      contentTypeHint || "application/octet-stream",
+    );
+    res.setHeader("Cache-Control", "private, max-age=300");
+    return res.send(buffer);
+  } catch (error) {
+    console.error("preview-file error:", error);
+    return res.status(500).json({
+      message: "Failed to load preview file",
+      error: error?.message,
+    });
+  }
+});
+
 export default app;
