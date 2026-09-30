@@ -225,6 +225,20 @@ const userSchema = new mongoose.Schema(
       ref: "TreeRemoval",
       default: null,
     },
+    /**
+     * True once the operator uploads insurance (COI) via junk/site-cleanup
+     * signup. Required to accept junk removal / site cleanup orders.
+     */
+    isInsured: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    /** Latest insurance / COI file URL mirrored from JunkRemoval.COI. */
+    insuranceFile: {
+      type: String,
+      default: null,
+    },
   },
   {
     timestamps: true,

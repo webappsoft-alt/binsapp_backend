@@ -57,6 +57,7 @@ import {
   findNearbyDustbinProviders,
   resolveCompanyTopTier,
 } from "../utils/dustbinMatching.js";
+import { findNearbyJunkOperators } from "../utils/junkOperatorMatching.js";
 import Company from "../models/Company.js";
 import {
   quoteCommercialDumpster,
@@ -998,63 +999,14 @@ export const initSocket = (server) => {
               providersOnline,
             });
           } else if (resolvedServiceType === "Junk Removal") {
-            const userLng = coords.longitude;
-            const userLat = coords.latitude;
-            console.log("userLng, userLat", userLng, " , ", userLat);
-            const milesToMeters = 1609.34;
-            const maxDistanceInMeters = 50 * milesToMeters;
-            const junkRemoval = await JunkRemoval.aggregate([
-              {
-                $geoNear: {
-                  near: {
-                    type: "Point",
-                    coordinates: [userLng, userLat],
-                  },
-                  distanceField: "distanceInMeters",
-                  maxDistance: maxDistanceInMeters,
-                  spherical: true,
-                },
-              },
-              {
-                $match: {
-                  status: "approved",
-                },
-              },
-              {
-                $lookup: {
-                  from: "users",
-                  localField: "userId",
-                  foreignField: "_id",
-                  as: "user",
-                },
-              },
-              {
-                $unwind: "$user",
-              },
-              {
-                $match: {
-                  "user.status": "online",
-                },
-              },
-              {
-                $addFields: {
-                  distanceInMiles: { $divide: ["$distanceInMeters", 1609.34] },
-                },
-              },
-            ]);
-            junkRemoval.forEach((item) => {
-              const user = item?.user;
-              if (user && user.status === "online") {
-                uniqueUsersMap.set(user._id.toString(), {
-                  userId: user._id.toString(),
-                  fcmtoken: user.fcmtoken,
-                  email: user.email || "",
-                });
-              }
+            // Fan out to nearby renters even without junk signup / Stripe.
+            // Accept flow still requires insurance + signup + Stripe.
+            uniqueUserObjects = await findNearbyJunkOperators({
+              latitude: coords.latitude,
+              longitude: coords.longitude,
+              onlineOnly: true,
+              excludeUserId: socket.user?._id,
             });
-            // console.log("junkRemoval", JSON.stringify(junkRemoval, null, 2));
-            uniqueUserObjects = Array.from(uniqueUsersMap.values());
-            // console.log("List of Junk Removal", uniqueUserObjects);
             if (uniqueUserObjects.length == 0) {
               return respondSocket(callback, {
                 success: false,
@@ -1420,8 +1372,6 @@ export const initSocket = (server) => {
               });
             }
           } else if (service_type === "Junk Removal") {
-            const userLng = location.coordinates[0];
-            const userLat = location.coordinates[1];
             const junkReviewOk = await consumeApprovedManualReview({
               userId: socket.user._id,
               reviewId,
@@ -1429,67 +1379,14 @@ export const initSocket = (server) => {
             });
             if (!junkReviewOk) return;
 
-            const milesToMeters = 1609.34;
-            const maxDistanceInMeters = 50 * milesToMeters;
-            const junkRemoval = await JunkRemoval.aggregate([
-              {
-                $geoNear: {
-                  near: {
-                    type: "Point",
-                    coordinates: [userLng, userLat],
-                  },
-                  distanceField: "distanceInMeters",
-                  maxDistance: maxDistanceInMeters,
-                  spherical: true,
-                },
-              },
-              {
-                $match: {
-                  status: "approved",
-                },
-              },
-              {
-                $lookup: {
-                  from: "users",
-                  localField: "userId",
-                  foreignField: "_id",
-                  as: "user",
-                },
-              },
-              {
-                $unwind: "$user",
-              },
-              {
-                $match: {
-                  "user.status": "online",
-                },
-              },
-              {
-                $addFields: {
-                  distanceInMiles: { $divide: ["$distanceInMeters", 1609.34] },
-                },
-              },
-              {
-                $match: {
-                  $expr: {
-                    $lte: ["$distanceInMiles", "$radius"],
-                  },
-                },
-              },
-            ]);
-            junkRemoval.forEach((item) => {
-              const user = item?.user;
-              if (user && user.status === "online") {
-                uniqueUsersMap.set(user._id.toString(), {
-                  userId: user._id.toString(),
-                  fcmtoken: user.fcmtoken,
-                  email: user.email || "",
-                });
-              }
+            // Fan out to nearby renters even without junk signup / Stripe.
+            // Accept still gates on Stripe + insurance / junk signup.
+            uniqueUserObjects = await findNearbyJunkOperators({
+              latitude: bookingCoords.latitude,
+              longitude: bookingCoords.longitude,
+              onlineOnly: true,
+              excludeUserId: senderId,
             });
-            // console.log("junkRemoval", JSON.stringify(junkRemoval, null, 2));
-            uniqueUserObjects = Array.from(uniqueUsersMap.values());
-            // console.log("List of Junk Removal", uniqueUserObjects);
             if (uniqueUserObjects.length == 0) {
               callback({
                 success: false,
@@ -2340,6 +2237,31 @@ export const initSocket = (server) => {
             });
           }
 
+          // Accept gates: operators may view/receive requests without Stripe or
+          // junk insurance, but final acceptance is blocked until those are set.
+          const accepter = await User.findById(senderId)
+            .select(
+              "accountId accountId_verified isInsured insuranceFile junkRemoval name",
+            )
+            .populate({
+              path: "junkRemoval",
+              select: "COI status userId",
+            })
+            .lean();
+
+          const stripeReady = Boolean(
+            accepter?.accountId_verified && accepter?.accountId,
+          );
+          if (!stripeReady) {
+            return callback({
+              success: false,
+              code: "STRIPE_REQUIRED",
+              title: "Stripe Connection Required",
+              message:
+                "Connect your Stripe account before accepting orders. You can still view incoming requests.",
+            });
+          }
+
           const isWalletOrder = order.payment_type === "wallet";
           const isInvoiceOrder = order.payment_type === "invoice";
           if (!isWalletOrder && !isInvoiceOrder && !order.paymentId) {
@@ -2496,46 +2418,98 @@ export const initSocket = (server) => {
             // supports multi-unit dumpsters instead of rejecting on any overlap.
             dustbinId = dustbin;
           } else if (serviceType === "Junk Removal") {
-            const junkRemovalId = junkRemoval;
-            const findJunkRemoval =
-              await JunkRemoval.findById(junkRemovalId).lean();
+            const junkRemovalId =
+              junkRemoval ||
+              accepter?.junkRemoval?._id ||
+              accepter?.junkRemoval ||
+              null;
+            const findJunkRemoval = junkRemovalId
+              ? await JunkRemoval.findById(junkRemovalId).lean()
+              : null;
+
+            const insured = Boolean(
+              accepter?.isInsured ||
+                accepter?.insuranceFile ||
+                findJunkRemoval?.COI,
+            );
+
+            // Insurance-only path: operator uploaded COI without full junk signup.
             if (!findJunkRemoval) {
-              return callback({
-                success: false,
-                title: "Request Update",
-                message: "Junk removal profile not found.",
-              });
-            }
-            if (findJunkRemoval.userId.toString() !== senderId) {
-              return callback({
-                success: false,
-                title: "Request Update",
-                message: "Junk removal profile not found.",
-              });
-            }
-            if (findJunkRemoval.status !== "approved") {
-              return callback({
-                success: false,
-                title: "Request Update",
-                message: "Junk removal profile is not approved.",
-              });
-            }
-            bookingConflictMessage =
-              "You are already booked for the requested time period";
-            if (findJunkRemoval.bookings) {
-              for (const booking of findJunkRemoval.bookings) {
-                if (
-                  isOverlapping(start, end, booking.startDate, booking.endDate)
-                ) {
-                  return callback({
-                    success: false,
-                    title: "Request Update",
-                    message: bookingConflictMessage,
-                  });
+              if (!insured) {
+                return callback({
+                  success: false,
+                  code: "INSURANCE_REQUIRED",
+                  title: "Insurance Required",
+                  message:
+                    "Upload your insurance document before accepting junk removal or site cleanup orders.",
+                });
+              }
+              bookingConflictMessage =
+                "You are already booked for the requested time period";
+            } else {
+              if (findJunkRemoval.userId.toString() !== senderId) {
+                return callback({
+                  success: false,
+                  title: "Request Update",
+                  message: "Junk removal profile not found.",
+                });
+              }
+              if (findJunkRemoval.status === "rejected") {
+                return callback({
+                  success: false,
+                  title: "Request Update",
+                  message:
+                    "Your junk removal application was rejected. Please re-upload documents to continue.",
+                });
+              }
+
+              if (!insured) {
+                return callback({
+                  success: false,
+                  code: "INSURANCE_REQUIRED",
+                  title: "Insurance Required",
+                  message:
+                    "Upload your insurance document before accepting junk removal or site cleanup orders.",
+                });
+              }
+
+              // Keep user.isInsured in sync if COI exists but flag was never set.
+              if (!accepter?.isInsured && findJunkRemoval.COI) {
+                User.updateOne(
+                  { _id: senderId },
+                  {
+                    $set: {
+                      isInsured: true,
+                      insuranceFile: findJunkRemoval.COI,
+                    },
+                  },
+                ).catch((err) =>
+                  logger.error("Failed to sync isInsured on accept", err),
+                );
+              }
+
+              bookingConflictMessage =
+                "You are already booked for the requested time period";
+              if (findJunkRemoval.bookings) {
+                for (const booking of findJunkRemoval.bookings) {
+                  if (
+                    isOverlapping(
+                      start,
+                      end,
+                      booking.startDate,
+                      booking.endDate,
+                    )
+                  ) {
+                    return callback({
+                      success: false,
+                      title: "Request Update",
+                      message: bookingConflictMessage,
+                    });
+                  }
                 }
               }
+              linkedJunkRemovalId = findJunkRemoval._id;
             }
-            linkedJunkRemovalId = findJunkRemoval._id;
           } else if (serviceType === "Tree Removal") {
             const treeRemovalId = treeRemoval;
             const findTreeRemoval =

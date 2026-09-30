@@ -196,6 +196,13 @@ export async function updateUser(userId, updates = {}) {
       junkData = await JunkRemoval.create(junkPayload);
       user.junkRemoval = junkData._id;
     }
+    // Insurance upload (COI) unlocks junk/site-cleanup accept flow.
+    const coiUrl =
+      junkData?.COI || junkPayload?.COI || junkPayload?.coi || null;
+    if (coiUrl) {
+      user.isInsured = true;
+      user.insuranceFile = String(coiUrl);
+    }
     appliedServices.push({
       key: "junkRemoval",
       label: "Junk Removal",
@@ -262,6 +269,31 @@ export async function updateUser(userId, updates = {}) {
     // Remove from updates
     delete updates.company;
   }
+  // Top-level insurance upload (no junkRemoval profile required).
+  if (updates.insuranceFile != null && String(updates.insuranceFile).trim()) {
+    const fileUrl = String(updates.insuranceFile).trim();
+    user.insuranceFile = fileUrl;
+    user.isInsured = true;
+    // Keep linked junk profile COI in sync when present.
+    if (user.junkRemoval?._id) {
+      try {
+        await JunkRemoval.findByIdAndUpdate(user.junkRemoval._id, {
+          $set: { COI: fileUrl },
+        });
+      } catch (err) {
+        logger.error("Failed to sync junkRemoval.COI from insuranceFile", err);
+      }
+    }
+    delete updates.insuranceFile;
+    delete updates.isInsured;
+  } else if (updates.isInsured === true || updates.isInsured === "true") {
+    user.isInsured = true;
+    delete updates.isInsured;
+  } else if (updates.isInsured === false || updates.isInsured === "false") {
+    user.isInsured = false;
+    delete updates.isInsured;
+  }
+
   // if (user.status !== "active") {
   //   throw new ForbiddenError(
   //     `User account is ${user.status} and cannot be updated`

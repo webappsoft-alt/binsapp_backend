@@ -15,6 +15,9 @@ export const registerSchema = Joi.object({
   type: Joi.string().optional(),
   role: Joi.string().optional(),
   access_types: Joi.string().optional().allow(null, ""),
+  // Operator can upload insurance without full junk signup (accept-gate flow).
+  isInsured: Joi.boolean().optional(),
+  insuranceFile: Joi.string().allow(null, "").optional(),
   // .valid("portaPotty", "treeRemoval", "junkRemoval", "company"),
   company: Joi.object({
     companyName: Joi.string().optional(),
@@ -72,6 +75,8 @@ export const registerSchema = Joi.object({
     }).required(),
     drivers_license: Joi.array().items(Joi.string()).optional(),
     COI: Joi.string().optional().allow(null, ""),
+    insurance_expiry_date: Joi.date().optional().allow(null, ""),
+    insuranceExpiryDate: Joi.date().optional().allow(null, ""),
     radius: Joi.number().optional().allow(null).allow(""),
     Business_license: Joi.string().optional().allow(null, ""),
     minimum_insurance_amount: Joi.string().optional().allow(null, ""),
