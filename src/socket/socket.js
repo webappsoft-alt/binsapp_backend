@@ -5955,7 +5955,26 @@ export const initSocket = (server) => {
       try {
         let count = 0;
         if (type === "order") {
-          count = await Order.countDocuments({ isAdminSeen: false });
+          const statusRows = await Order.aggregate([
+            { $match: { isAdminSeen: false } },
+            { $group: { _id: "$status", count: { $sum: 1 } } },
+          ]);
+          const byStatus = {
+            pending: 0,
+            accepted: 0,
+            completed: 0,
+            cancelled: 0,
+          };
+          let total = 0;
+          for (const row of statusRows) {
+            const key = row?._id || "pending";
+            const n = Number(row?.count) || 0;
+            if (Object.prototype.hasOwnProperty.call(byStatus, key)) {
+              byStatus[key] = n;
+            }
+            total += n;
+          }
+          count = { total, ...byStatus };
         } else if (type === "support") {
           count = await Support.countDocuments({ isAdminSeen: false });
         } else if (type === "menual_review_request") {
