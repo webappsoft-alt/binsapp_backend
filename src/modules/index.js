@@ -201,7 +201,7 @@ app.use("/public-reviews", publicReviewRoutes);
 app.use("/sales-agent", publicSalesAgentRoutes);
 //Image Uploading
 
-app.post("/upload-image", handleSingleUpload("image"), async (req, res) => {
+const handleImageUpload = async (req, res) => {
   if (!req.file) {
     return res.status(400).send("No file uploaded.");
   }
@@ -248,10 +248,79 @@ app.post("/upload-image", handleSingleUpload("image"), async (req, res) => {
       await sharpPipeline.toFile(outPath);
       uploadPath = outPath;
     } catch (imageError) {
-      console.error(
-        "Image processing failed, uploading original file:",
-        imageError,
+      console.warn(
+        "sharp image processing failed, trying HEIC fallback:",
+        imageError?.message || imageError,
       );
+
+      try {
+        const rawBuf = fs.readFileSync(file.path);
+        const isHeic =
+          ext === "heic" ||
+          ext === "heif" ||
+          mimeType.includes("heic") ||
+          mimeType.includes("heif") ||
+          bufferLooksLikeHeic(rawBuf);
+
+        if (isHeic) {
+          console.info("upload-image: converting HEIC via heic-convert");
+          const jpegBuf = await heicConvert({
+            buffer: rawBuf,
+            format: "JPEG",
+            quality: 0.84,
+          });
+          const now = Date.now();
+          destinationName = `${now}.jpg`;
+          contentType = "image/jpeg";
+          const heicOutPath = join(
+            __dirname,
+            "files",
+            `heic-converted-${destinationName}`,
+          );
+          fs.writeFileSync(heicOutPath, Buffer.from(jpegBuf));
+          try {
+            const image = sharp(heicOutPath, {
+              limitInputPixels: false,
+              failOn: "truncated",
+            });
+            const meta = await image.metadata();
+            let pipeline = image.rotate().resize({ width: 800 });
+            const outPath = join(
+              __dirname,
+              "files",
+              `compressed-${destinationName}`,
+            );
+            if (meta.hasAlpha) {
+              pipeline = pipeline.png({ quality: 80 });
+              contentType = "image/png";
+              destinationName = `${now}.png`;
+            } else {
+              pipeline = pipeline.jpeg({ quality: 80 });
+              contentType = "image/jpeg";
+              destinationName = `${now}.jpg`;
+            }
+            await pipeline.toFile(outPath);
+            uploadPath = outPath;
+            fs.unlink(heicOutPath, () => {});
+          } catch (secondErr) {
+            console.warn(
+              "upload-image: heic sharp reprocess failed, uploading converted jpeg directly:",
+              secondErr?.message || secondErr,
+            );
+            uploadPath = heicOutPath;
+          }
+        } else {
+          console.error(
+            "Non-HEIC image processing also failed, uploading original file:",
+            imageError,
+          );
+        }
+      } catch (heicCatchErr) {
+        console.error(
+          "HEIC fallback also failed, uploading original:",
+          heicCatchErr?.message || heicCatchErr,
+        );
+      }
     }
 
     const destination = `uploads/${destinationName}`;
@@ -278,7 +347,9 @@ app.post("/upload-image", handleSingleUpload("image"), async (req, res) => {
       .status(400)
       .json({ message: "Error in uploading. Try again later.", error });
   }
-});
+};
+app.post("/upload-image", handleSingleUpload("image"), handleImageUpload);
+app.post("/image/upload", handleSingleUpload("image"), handleImageUpload);
 app.post("/upload-file", handleSingleUpload("file"), async (req, res) => {
   if (!req.file) {
     return res.status(400).send("No file uploaded.");
