@@ -229,12 +229,44 @@ function isHeicUpload(file, buffer) {
   );
 }
 
-async function convertHeicToJpegBuffer(buffer, quality = 0.85) {
-  return await heicConvert({
-    buffer,
-    format: "JPEG",
-    quality,
-  });
+async function normalizeHeicToJpegBuffer(buffer, quality = 0.85) {
+  if (!buffer || buffer.length === 0) return null;
+
+  // 1. If it has real HEIC magic bytes in its header
+  if (bufferLooksLikeHeic(buffer)) {
+    try {
+      const jpegBuf = await heicConvert({
+        buffer,
+        format: "JPEG",
+        quality,
+      });
+      return Buffer.from(jpegBuf);
+    } catch (heicErr) {
+      console.warn("heicConvert failed on real HEIC header:", heicErr?.message);
+    }
+  }
+
+  // 2. If it's another image format (like JPEG, PNG, WebP) disguised with a .heic extension
+  try {
+    const img = sharp(buffer, { limitInputPixels: false, failOn: "none" });
+    const meta = await img.metadata();
+    if (meta.format) {
+      return await img.jpeg({ quality: Math.round(quality * 100) }).toBuffer();
+    }
+  } catch (sharpErr) {
+    // Sharp couldn't decode, try heicConvert as last resort
+    try {
+      const jpegBuf = await heicConvert({
+        buffer,
+        format: "JPEG",
+        quality,
+      });
+      return Buffer.from(jpegBuf);
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 const handleImageUpload = async (req, res) => {
@@ -270,42 +302,44 @@ const handleImageUpload = async (req, res) => {
 
     if (isHeic && rawBuf) {
       try {
-        console.info("upload-image: converting HEIC to JPEG via heic-convert");
-        const jpegBuf = await convertHeicToJpegBuffer(rawBuf, 0.85);
-        const now = Date.now();
-        destinationName = `${now}.jpg`;
-        contentType = "image/jpeg";
-        const heicOutPath = join(
-          __dirname,
-          "files",
-          `heic-converted-${destinationName}`,
-        );
-        fs.writeFileSync(heicOutPath, Buffer.from(jpegBuf));
-        uploadPath = heicOutPath;
-
-        // Try sharp resize/compression on converted JPEG
-        try {
-          const image = sharp(heicOutPath, {
-            limitInputPixels: false,
-            failOn: "truncated",
-          });
-          const outPath = join(
+        console.info("upload-image: converting HEIC to JPEG");
+        const jpegBuf = await normalizeHeicToJpegBuffer(rawBuf, 0.85);
+        if (jpegBuf) {
+          const now = Date.now();
+          destinationName = `${now}.jpg`;
+          contentType = "image/jpeg";
+          const heicOutPath = join(
             __dirname,
             "files",
-            `compressed-${destinationName}`,
+            `heic-converted-${destinationName}`,
           );
-          await image
-            .rotate()
-            .resize({ width: 800 })
-            .jpeg({ quality: 80 })
-            .toFile(outPath);
-          uploadPath = outPath;
-          fs.unlink(heicOutPath, () => {});
-        } catch (sharpErr) {
-          console.warn(
-            "upload-image: sharp resize on converted HEIC failed, using direct jpeg:",
-            sharpErr?.message,
-          );
+          fs.writeFileSync(heicOutPath, jpegBuf);
+          uploadPath = heicOutPath;
+
+          // Try sharp resize/compression on converted JPEG
+          try {
+            const image = sharp(heicOutPath, {
+              limitInputPixels: false,
+              failOn: "truncated",
+            });
+            const outPath = join(
+              __dirname,
+              "files",
+              `compressed-${destinationName}`,
+            );
+            await image
+              .rotate()
+              .resize({ width: 800 })
+              .jpeg({ quality: 80 })
+              .toFile(outPath);
+            uploadPath = outPath;
+            fs.unlink(heicOutPath, () => {});
+          } catch (sharpErr) {
+            console.warn(
+              "upload-image: sharp resize on converted HEIC failed, using direct jpeg:",
+              sharpErr?.message,
+            );
+          }
         }
       } catch (heicErr) {
         console.error(
@@ -397,18 +431,20 @@ app.post("/upload-file", handleSingleUpload("file"), async (req, res) => {
 
     if (isHeic && rawBuf) {
       try {
-        console.info("upload-file: converting HEIC to JPEG via heic-convert");
-        const jpegBuf = await convertHeicToJpegBuffer(rawBuf, 0.85);
-        const now = Date.now();
-        destinationName = `${now}.jpg`;
-        contentType = "image/jpeg";
-        const convertedPath = join(
-          __dirname,
-          "files",
-          `converted-${destinationName}`,
-        );
-        fs.writeFileSync(convertedPath, Buffer.from(jpegBuf));
-        uploadPath = convertedPath;
+        console.info("upload-file: converting HEIC to JPEG");
+        const jpegBuf = await normalizeHeicToJpegBuffer(rawBuf, 0.85);
+        if (jpegBuf) {
+          const now = Date.now();
+          destinationName = `${now}.jpg`;
+          contentType = "image/jpeg";
+          const convertedPath = join(
+            __dirname,
+            "files",
+            `converted-${destinationName}`,
+          );
+          fs.writeFileSync(convertedPath, jpegBuf);
+          uploadPath = convertedPath;
+        }
       } catch (convErr) {
         console.warn(
           "upload-file: HEIC conversion failed, uploading original:",
