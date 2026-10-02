@@ -199,7 +199,43 @@ app.use("/leads", leadsRoutes);
 app.use("/growth", growthRoutes);
 app.use("/public-reviews", publicReviewRoutes);
 app.use("/sales-agent", publicSalesAgentRoutes);
-//Image Uploading
+// Image Uploading & HEIC Conversion
+const HEIC_FTYP_BRANDS = new Set([
+  "heic",
+  "heif",
+  "mif1",
+  "msf1",
+  "heix",
+  "hevc",
+]);
+
+function bufferLooksLikeHeic(buf) {
+  if (!buf || buf.length < 12) return false;
+  const ftyp = buf.toString("ascii", 4, 8);
+  if (ftyp !== "ftyp") return false;
+  const brand = buf.toString("ascii", 8, 12).toLowerCase();
+  return HEIC_FTYP_BRANDS.has(brand);
+}
+
+function isHeicUpload(file, buffer) {
+  const mimeType = String(file?.mimetype || "").toLowerCase();
+  const ext = getUploadExtension(file);
+  return (
+    ext === "heic" ||
+    ext === "heif" ||
+    mimeType.includes("heic") ||
+    mimeType.includes("heif") ||
+    (buffer && bufferLooksLikeHeic(buffer))
+  );
+}
+
+async function convertHeicToJpegBuffer(buffer, quality = 0.85) {
+  return await heicConvert({
+    buffer,
+    format: "JPEG",
+    quality,
+  });
+}
 
 const handleImageUpload = async (req, res) => {
   if (!req.file) {
@@ -223,102 +259,92 @@ const handleImageUpload = async (req, res) => {
       : `image/${ext === "jpg" ? "jpeg" : ext}`;
     let destinationName = file.filename;
 
+    let rawBuf = null;
     try {
-      const image = sharp(file.path, {
-        limitInputPixels: false,
-        failOn: "truncated",
-      });
-      const metadata = await image.metadata();
+      rawBuf = fs.readFileSync(file.path);
+    } catch (readErr) {
+      console.warn("Failed to read raw file buffer:", readErr?.message);
+    }
 
-      let sharpPipeline = image.rotate().resize({ width: 800 });
+    const isHeic = isHeicUpload(file, rawBuf);
 
-      // Normalize HEIC/HEIF (and other camera formats) to JPEG/PNG for
-      // browsers + vision APIs that do not accept iPhone originals.
-      if (metadata.hasAlpha) {
-        sharpPipeline = sharpPipeline.png({ quality: 80 });
-        contentType = "image/png";
-        destinationName = `${Date.now()}.png`;
-      } else {
-        sharpPipeline = sharpPipeline.jpeg({ quality: 80 });
-        contentType = "image/jpeg";
-        destinationName = `${Date.now()}.jpg`;
-      }
-
-      const outPath = join(__dirname, "files", `compressed-${destinationName}`);
-      await sharpPipeline.toFile(outPath);
-      uploadPath = outPath;
-    } catch (imageError) {
-      console.warn(
-        "sharp image processing failed, trying HEIC fallback:",
-        imageError?.message || imageError,
-      );
-
+    if (isHeic && rawBuf) {
       try {
-        const rawBuf = fs.readFileSync(file.path);
-        const isHeic =
-          ext === "heic" ||
-          ext === "heif" ||
-          mimeType.includes("heic") ||
-          mimeType.includes("heif") ||
-          bufferLooksLikeHeic(rawBuf);
+        console.info("upload-image: converting HEIC to JPEG via heic-convert");
+        const jpegBuf = await convertHeicToJpegBuffer(rawBuf, 0.85);
+        const now = Date.now();
+        destinationName = `${now}.jpg`;
+        contentType = "image/jpeg";
+        const heicOutPath = join(
+          __dirname,
+          "files",
+          `heic-converted-${destinationName}`,
+        );
+        fs.writeFileSync(heicOutPath, Buffer.from(jpegBuf));
+        uploadPath = heicOutPath;
 
-        if (isHeic) {
-          console.info("upload-image: converting HEIC via heic-convert");
-          const jpegBuf = await heicConvert({
-            buffer: rawBuf,
-            format: "JPEG",
-            quality: 0.84,
+        // Try sharp resize/compression on converted JPEG
+        try {
+          const image = sharp(heicOutPath, {
+            limitInputPixels: false,
+            failOn: "truncated",
           });
-          const now = Date.now();
-          destinationName = `${now}.jpg`;
-          contentType = "image/jpeg";
-          const heicOutPath = join(
+          const outPath = join(
             __dirname,
             "files",
-            `heic-converted-${destinationName}`,
+            `compressed-${destinationName}`,
           );
-          fs.writeFileSync(heicOutPath, Buffer.from(jpegBuf));
-          try {
-            const image = sharp(heicOutPath, {
-              limitInputPixels: false,
-              failOn: "truncated",
-            });
-            const meta = await image.metadata();
-            let pipeline = image.rotate().resize({ width: 800 });
-            const outPath = join(
-              __dirname,
-              "files",
-              `compressed-${destinationName}`,
-            );
-            if (meta.hasAlpha) {
-              pipeline = pipeline.png({ quality: 80 });
-              contentType = "image/png";
-              destinationName = `${now}.png`;
-            } else {
-              pipeline = pipeline.jpeg({ quality: 80 });
-              contentType = "image/jpeg";
-              destinationName = `${now}.jpg`;
-            }
-            await pipeline.toFile(outPath);
-            uploadPath = outPath;
-            fs.unlink(heicOutPath, () => {});
-          } catch (secondErr) {
-            console.warn(
-              "upload-image: heic sharp reprocess failed, uploading converted jpeg directly:",
-              secondErr?.message || secondErr,
-            );
-            uploadPath = heicOutPath;
-          }
-        } else {
-          console.error(
-            "Non-HEIC image processing also failed, uploading original file:",
-            imageError,
+          await image
+            .rotate()
+            .resize({ width: 800 })
+            .jpeg({ quality: 80 })
+            .toFile(outPath);
+          uploadPath = outPath;
+          fs.unlink(heicOutPath, () => {});
+        } catch (sharpErr) {
+          console.warn(
+            "upload-image: sharp resize on converted HEIC failed, using direct jpeg:",
+            sharpErr?.message,
           );
         }
-      } catch (heicCatchErr) {
+      } catch (heicErr) {
         console.error(
-          "HEIC fallback also failed, uploading original:",
-          heicCatchErr?.message || heicCatchErr,
+          "upload-image: HEIC conversion failed, uploading original:",
+          heicErr?.message || heicErr,
+        );
+      }
+    } else {
+      // Normal image: resize/compress via sharp
+      try {
+        const image = sharp(file.path, {
+          limitInputPixels: false,
+          failOn: "truncated",
+        });
+        const metadata = await image.metadata();
+
+        let sharpPipeline = image.rotate().resize({ width: 800 });
+
+        if (metadata.hasAlpha) {
+          sharpPipeline = sharpPipeline.png({ quality: 80 });
+          contentType = "image/png";
+          destinationName = `${Date.now()}.png`;
+        } else {
+          sharpPipeline = sharpPipeline.jpeg({ quality: 80 });
+          contentType = "image/jpeg";
+          destinationName = `${Date.now()}.jpg`;
+        }
+
+        const outPath = join(
+          __dirname,
+          "files",
+          `compressed-${destinationName}`,
+        );
+        await sharpPipeline.toFile(outPath);
+        uploadPath = outPath;
+      } catch (imageError) {
+        console.warn(
+          "sharp image processing failed, uploading original file:",
+          imageError?.message || imageError,
         );
       }
     }
@@ -355,33 +381,60 @@ app.post("/upload-file", handleSingleUpload("file"), async (req, res) => {
     return res.status(400).send("No file uploaded.");
   }
   try {
-    // Read the uploaded video file
     const file = req.file;
-    const destination = `uploads/${file.filename}`;
+    let uploadPath = file.path;
+    let contentType = file.mimetype || "application/octet-stream";
+    let destinationName = file.filename;
 
-    // Upload the compressed video to Firebase Storage
-    await bucket.upload(file.path, {
+    let rawBuf = null;
+    try {
+      rawBuf = fs.readFileSync(file.path);
+    } catch (readErr) {
+      console.warn("upload-file: failed to read buffer:", readErr?.message);
+    }
+
+    const isHeic = isHeicUpload(file, rawBuf);
+
+    if (isHeic && rawBuf) {
+      try {
+        console.info("upload-file: converting HEIC to JPEG via heic-convert");
+        const jpegBuf = await convertHeicToJpegBuffer(rawBuf, 0.85);
+        const now = Date.now();
+        destinationName = `${now}.jpg`;
+        contentType = "image/jpeg";
+        const convertedPath = join(
+          __dirname,
+          "files",
+          `converted-${destinationName}`,
+        );
+        fs.writeFileSync(convertedPath, Buffer.from(jpegBuf));
+        uploadPath = convertedPath;
+      } catch (convErr) {
+        console.warn(
+          "upload-file: HEIC conversion failed, uploading original:",
+          convErr?.message || convErr,
+        );
+      }
+    }
+
+    const destination = `uploads/${destinationName}`;
+
+    await bucket.upload(uploadPath, {
       destination,
       metadata: {
-        contentType: file.mimetype, // Adjust content type based on your video format
+        contentType,
       },
     });
 
-    // Make the file public
     const fileInBucket = bucket.file(destination);
     await fileInBucket.makePublic();
 
     const publicUrl = `https://storage.googleapis.com/${bucket.name}/${destination}`;
 
-    // Delete the original and compressed video files after sending the response
-    fs.unlink(file.path, (err) => {
-      if (err) console.error("Failed to delete original video:", err);
-    });
-    res.json({ file: publicUrl });
+    fs.unlink(file.path, () => {});
+    if (uploadPath !== file.path) fs.unlink(uploadPath, () => {});
 
-    // fs.unlink(compressedFilePath, (err) => {
-    //   if (err) console.error('Failed to delete compressed video:', err);
-    // });
+    res.json({ file: publicUrl });
   } catch (error) {
     console.log(error);
     res
@@ -389,23 +442,6 @@ app.post("/upload-file", handleSingleUpload("file"), async (req, res) => {
       .json({ message: "Error in uploading. Try again later.", error });
   }
 });
-
-const HEIC_FTYP_BRANDS = new Set([
-  "heic",
-  "heif",
-  "mif1",
-  "msf1",
-  "heix",
-  "hevc",
-]);
-
-function bufferLooksLikeHeic(buf) {
-  if (!buf || buf.length < 12) return false;
-  const ftyp = buf.toString("ascii", 4, 8);
-  if (ftyp !== "ftyp") return false;
-  const brand = buf.toString("ascii", 8, 12).toLowerCase();
-  return HEIC_FTYP_BRANDS.has(brand);
-}
 
 function extractGcsObjectPath(rawUrl) {
   try {
