@@ -390,11 +390,6 @@ app.post("/upload-file", handleSingleUpload("file"), async (req, res) => {
   }
 });
 
-const ALLOWED_PREVIEW_HOSTS = new Set([
-  "storage.googleapis.com",
-  "firebasestorage.googleapis.com",
-]);
-
 const HEIC_FTYP_BRANDS = new Set([
   "heic",
   "heif",
@@ -415,7 +410,6 @@ function bufferLooksLikeHeic(buf) {
 function extractGcsObjectPath(rawUrl) {
   try {
     const u = new URL(rawUrl);
-    if (!ALLOWED_PREVIEW_HOSTS.has(u.hostname)) return null;
 
     // https://storage.googleapis.com/{bucket}/{object}
     if (u.hostname === "storage.googleapis.com") {
@@ -457,8 +451,8 @@ app.get("/preview-file", async (req, res) => {
       return res.status(400).json({ message: "Invalid url" });
     }
 
-    if (!ALLOWED_PREVIEW_HOSTS.has(parsed.hostname)) {
-      return res.status(403).json({ message: "URL host not allowed" });
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return res.status(400).json({ message: "Invalid protocol" });
     }
 
     const objectPath = extractGcsObjectPath(rawUrl);
