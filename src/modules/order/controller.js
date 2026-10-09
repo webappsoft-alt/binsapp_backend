@@ -239,6 +239,26 @@ export const fetchrequestOrderRentee = async (req, res, next) => {
   }
 };
 
+export const getRenteeOrderById = async (req, res, next) => {
+  try {
+    const userId = req.user._id;
+    const orderId = req.params.id;
+    const order = await orderService.getSingleOrder(
+      orderId,
+      userId,
+      PRICING_ROLES.CUSTOMER,
+    );
+    res.status(200).json({
+      success: true,
+      message: "Order fetched successfully",
+      data: order,
+      order: order,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const deleteRenterOrder = async (req, res, next) => {
   try {
     const userId = req.user._id;

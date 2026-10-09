@@ -1,4 +1,5 @@
 import Lead from "../../models/Lead.js";
+import User from "../../models/User.js";
 import { NotFoundError, BadRequestError } from "../../utils/apiError.js";
 import { notifyCommercialParties } from "../../utils/commercialNotify.js";
 import logger from "../../config/logger.js";
@@ -78,6 +79,9 @@ class LeadService {
             converted: {
               $sum: { $cond: [{ $eq: ["$status", "converted"] }, 1, 0] },
             },
+            rejected: {
+              $sum: { $cond: [{ $eq: ["$status", "rejected"] }, 1, 0] },
+            },
           },
         },
       ]),
@@ -87,9 +91,71 @@ class LeadService {
       new: 0,
       contacted: 0,
       converted: 0,
+      rejected: 0,
     };
+
+    // Attach matching registered user (if already created in User collection)
+    let dataWithUsers = data;
+    try {
+      const phoneList = data
+        .map((l) => (l.phone || "").replace(/[^\d]/g, ""))
+        .filter((p) => p.length >= 7);
+      const emailList = data
+        .map((l) => (l.email || "").toLowerCase().trim())
+        .filter(Boolean);
+
+      const orConds = [];
+      if (phoneList.length > 0) {
+        phoneList.forEach((digits) => {
+          const sub = digits.slice(-10);
+          orConds.push({ phone: { $regex: sub } });
+        });
+      }
+      if (emailList.length > 0) {
+        orConds.push({ email: { $in: emailList } });
+      }
+
+      if (orConds.length > 0) {
+        const matchedUsers = await User.find({ $or: orConds })
+          .select("_id name phone email role profilePicture status")
+          .lean();
+
+        dataWithUsers = data.map((lead) => {
+          const lPhone = (lead.phone || "").replace(/[^\d]/g, "");
+          const lEmail = (lead.email || "").toLowerCase().trim();
+          const user = matchedUsers.find((u) => {
+            if (u.status === "deleted") return false;
+            const uPhone = (u.phone || "").replace(/[^\d]/g, "");
+            const uEmail = (u.email || "").toLowerCase().trim();
+            return (
+              (lPhone && lPhone.length >= 7 && (uPhone.includes(lPhone) || lPhone.includes(uPhone))) ||
+              (lEmail && lEmail === uEmail)
+            );
+          });
+          return {
+            ...lead,
+            existingUser: user
+              ? {
+                  _id: user._id,
+                  name: user.name || lead.contactPerson || lead.contactName || "User",
+                  phone: user.phone || lead.phone,
+                  email: user.email || lead.email,
+                  role: user.role || "renter",
+                  profilePicture: user.profilePicture || "",
+                }
+              : null,
+          };
+        });
+      } else {
+        dataWithUsers = data.map((lead) => ({ ...lead, existingUser: null }));
+      }
+    } catch (err) {
+      logger.warn("Failed to attach matching users to commercial leads:", err);
+      dataWithUsers = data.map((lead) => ({ ...lead, existingUser: null }));
+    }
+
     return {
-      data,
+      data: dataWithUsers,
       page: Number(page) || 1,
       limit: Number(limit) || 20,
       total,
@@ -101,7 +167,7 @@ class LeadService {
   async updateLead(id, data) {
     const allowed = {};
     if (data.status != null) {
-      if (!["new", "contacted", "converted"].includes(data.status)) {
+      if (!["new", "contacted", "converted", "rejected"].includes(data.status)) {
         throw new BadRequestError("Invalid lead status");
       }
       allowed.status = data.status;

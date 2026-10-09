@@ -15,6 +15,10 @@ export const checkServiceCoverageTool = {
           type: "string",
           description: "5-digit US ZIP code of the delivery location (e.g. '78701')",
         },
+        address: {
+          type: "string",
+          description: "Full street address of the delivery location if provided by user",
+        },
         serviceType: {
           type: "string",
           enum: ["Dumbster", "Porta Potty", "Junk Removal", "Tree Removal"],
@@ -50,6 +54,10 @@ export const captureLeadProfileTool = {
         zipCode: {
           type: "string",
           description: "5-digit US delivery ZIP code",
+        },
+        address: {
+          type: "string",
+          description: "Customer's jobsite or delivery street address",
         },
         serviceType: {
           type: "string",
@@ -91,15 +99,35 @@ export const generatePrefilledCheckoutTool = {
         },
         sizeOrVolume: {
           type: "string",
-          description: "Selected size or unit (e.g., '20 Yard', '30 Yard')",
+          description: "Selected dumpster size, unit, or junk volume (e.g., '20 Yard', '1/2 Truckload')",
+        },
+        junkVolume: {
+          type: "string",
+          description: "Junk removal estimated volume (e.g., 'Single Bulky Item', '1/4 Truckload', '1/2 Truckload', 'Full Truckload', 'Multiple Truckloads')",
+        },
+        treeNeed: {
+          type: "string",
+          description: "Tree service category (e.g., 'Tree removal', 'Fallen tree', 'Storm cleanup', 'Tree trimming', 'Property cleanup', 'Other')",
+        },
+        urgency: {
+          type: "string",
+          description: "Service urgency level (e.g., 'Emergency / Hazard', 'Within 24-48 Hours', 'This Week', 'Flexible')",
         },
         zipCode: {
           type: "string",
           description: "5-digit delivery ZIP code",
         },
+        address: {
+          type: "string",
+          description: "Full street address of the jobsite / delivery location",
+        },
         deliveryDate: {
           type: "string",
-          description: "Requested delivery date (YYYY-MM-DD)",
+          description: "Requested delivery or service date (YYYY-MM-DD or timeframe)",
+        },
+        projectDescription: {
+          type: "string",
+          description: "Specific details or items to be handled",
         },
         customerName: {
           type: "string",
@@ -115,10 +143,10 @@ export const generatePrefilledCheckoutTool = {
         },
         estimatedPrice: {
           type: "number",
-          description: "Quoted base price in USD",
+          description: "Quoted base price in USD if verified (leave null for Tree Service where arborist review is required)",
         },
       },
-      required: ["serviceType", "sizeOrVolume", "zipCode"],
+      required: ["serviceType", "zipCode"],
     },
   },
 };
@@ -167,11 +195,44 @@ export const escalateToHumanOrCommercialTool = {
   },
 };
 
+export const findNearbyDumpsterProvidersTool = {
+  type: "function",
+  function: {
+    name: "find_nearby_dumpster_providers",
+    description:
+      "Finds local dumpster providers and available dumpster sizes within a specific search radius of the customer's location, based on provider coverage areas and real distance.",
+    parameters: {
+      type: "object",
+      properties: {
+        zipCode: {
+          type: "string",
+          description: "5-digit US ZIP code of the delivery location",
+        },
+        address: {
+          type: "string",
+          description: "Full street address or delivery location",
+        },
+        radiusMiles: {
+          type: "number",
+          description: "Preferred search radius in miles (e.g. 15, 25, 40, 50). Defaults to 40 if not specified.",
+        },
+        serviceType: {
+          type: "string",
+          enum: ["Dumbster", "Junk Removal", "Tree Removal", "Porta Potty"],
+          description: "Service type (defaults to Dumbster)",
+        },
+      },
+      required: [],
+    },
+  },
+};
+
 export const SALES_TOOLS_DEFINITIONS = [
   checkServiceCoverageTool,
   captureLeadProfileTool,
   generatePrefilledCheckoutTool,
   escalateToHumanOrCommercialTool,
+  findNearbyDumpsterProvidersTool,
 ];
 
 export default SALES_TOOLS_DEFINITIONS;

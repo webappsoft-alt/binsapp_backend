@@ -17,6 +17,8 @@ import {
   deleteKnowledge,
   getAnalytics,
   exportLeadsCSV,
+  listLeads,
+  updateLeadStatus,
   listConversations,
   getConversationBySession,
   submitRLHFFeedback,
@@ -71,17 +73,6 @@ router.delete(
   deleteKnowledge
 );
 
-// Backward-compatible root knowledge routes
-router.post("/", validate(createKnowledgeSchema, "body"), createKnowledge);
-router.get("/", validate(queryKnowledgeSchema, "query"), listKnowledge);
-router.get("/:id", validate(idParamSchema, "params"), getKnowledgeById);
-router.put(
-  "/:id",
-  validate(idParamSchema, "params"),
-  validate(updateKnowledgeSchema, "body"),
-  updateKnowledge
-);
-router.delete("/:id", validate(idParamSchema, "params"), deleteKnowledge);
 
 /* ==========================================================================
    2. Analytics & Performance
@@ -109,8 +100,30 @@ router.delete("/:id", validate(idParamSchema, "params"), deleteKnowledge);
 router.get("/analytics", getAnalytics);
 
 /* ==========================================================================
-   3. Leads CSV Export
+   3. Leads Management & Export
    ========================================================================== */
+
+/**
+ * @swagger
+ * /api/admin/sales-agent/leads:
+ *   get:
+ *     summary: Retrieve paginated sales leads with stats and filters
+ *     tags: [Sales Agent Admin]
+ *     security:
+ *       - BearerAuth: []
+ */
+router.get("/leads", listLeads);
+
+/**
+ * @swagger
+ * /api/admin/sales-agent/leads/{id}:
+ *   put:
+ *     summary: Update sales lead status or notes
+ *     tags: [Sales Agent Admin]
+ *     security:
+ *       - BearerAuth: []
+ */
+router.put("/leads/:id", updateLeadStatus);
 
 /**
  * @swagger
@@ -192,5 +205,17 @@ router.put(
   validate(updateSettingsSchema, "body"),
   updateSettings
 );
+
+/* Backward-compatible root knowledge routes */
+router.post("/", validate(createKnowledgeSchema, "body"), createKnowledge);
+router.get("/", validate(queryKnowledgeSchema, "query"), listKnowledge);
+router.get("/:id", validate(idParamSchema, "params"), getKnowledgeById);
+router.put(
+  "/:id",
+  validate(idParamSchema, "params"),
+  validate(updateKnowledgeSchema, "body"),
+  updateKnowledge
+);
+router.delete("/:id", validate(idParamSchema, "params"), deleteKnowledge);
 
 export default router;

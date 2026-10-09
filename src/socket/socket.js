@@ -1640,6 +1640,10 @@ export const initSocket = (server) => {
             success: true,
             title: copy.callback.title,
             message: copy.callback.message,
+            orderId: newRequest._id,
+            requestId: newRequest._id,
+            order: newRequest,
+            request: newRequest,
             ...(commercialQuote
               ? {
                   price: authoritativePrice,

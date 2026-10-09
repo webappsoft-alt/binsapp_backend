@@ -44,6 +44,54 @@ export const authenticate = async (req, res, next) => {
   }
 };
 
+/**
+ * Middleware to optionally verify JWT access token if present
+ * Does not block request if token is absent or invalid
+ */
+export const optionalAuthenticate = async (req, res, next) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      req.user = null;
+      return next();
+    }
+
+    const token = authHeader.split(" ")[1];
+    let decoded = null;
+    const secret = config.get("jwtSecret");
+    if (secret) {
+      try {
+        decoded = jwt.verify(token, secret);
+      } catch {
+        decoded = null;
+      }
+    }
+
+    if (!decoded) {
+      const altSecret = config.get("jwtIDPrivateKey");
+      if (altSecret) {
+        try {
+          decoded = jwt.verify(token, altSecret);
+        } catch {
+          decoded = null;
+        }
+      }
+    }
+
+    if (decoded?._id) {
+      const user = await User.findById(decoded._id).select("_id name email phone role status");
+      if (user && user.status !== "deleted" && user.status !== "deactivated") {
+        req.user = user;
+        req.token = token;
+      }
+    }
+    next();
+  } catch {
+    req.user = null;
+    next();
+  }
+};
+
 export const admin = (req, res, next) => {
   // console.log("admin", req.user.role);
   if (

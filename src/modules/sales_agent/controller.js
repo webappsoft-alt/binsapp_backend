@@ -2,6 +2,8 @@ import salesKnowledgeService from "./service.js";
 import {
   getSalesAgentMetrics,
   exportLeadsAsCSV,
+  listSalesLeads,
+  updateSalesLead,
 } from "./analytics/index.js";
 import {
   getSalesAgentSettings,
@@ -108,6 +110,51 @@ export const exportLeadsCSV = async (req, res, next) => {
       `attachment; filename="binsapp_sales_leads_${Date.now()}.csv"`
     );
     return res.status(200).send(csvContent);
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Paginated list of AI Sales Leads with stats
+ */
+export const listLeads = async (req, res, next) => {
+  try {
+    const result = await listSalesLeads(req.query);
+    return res.status(200).json({
+      success: true,
+      message: "Sales leads retrieved successfully",
+      data: result.leads,
+      pagination: {
+        page: result.page,
+        limit: result.limit,
+        total: result.total,
+        totalPages: result.totalPages,
+      },
+      stats: result.stats,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Updates lead status or notes
+ */
+export const updateLeadStatus = async (req, res, next) => {
+  try {
+    const lead = await updateSalesLead(req.params.id, req.body);
+    if (!lead) {
+      return res.status(404).json({
+        success: false,
+        message: "Sales lead not found",
+      });
+    }
+    return res.status(200).json({
+      success: true,
+      message: "Lead updated successfully",
+      data: lead,
+    });
   } catch (error) {
     next(error);
   }

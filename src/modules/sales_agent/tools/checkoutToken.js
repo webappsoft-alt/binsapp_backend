@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import redis from "../../../config/redis.js";
 import { logger } from "../../../config/logger.js";
 import { normalizeSalesServiceType } from "../../../models/SalesLead.js";
+import SalesConversation from "../../../models/SalesConversation.js";
 import { getLiveDumpsterSizes } from "../funnel/funnelState.service.js";
 import { resolveZipCoordinates } from "../services/realAvailability.service.js";
 
@@ -123,9 +124,13 @@ export async function createPrefilledCheckoutToken(payload = {}) {
     token,
     ref_token: token,
     serviceType: normalizedService,
-    sizeOrVolume: payload.sizeOrVolume || "",
+    sizeOrVolume: payload.sizeOrVolume || payload.junkVolume || "",
+    junkVolume: payload.junkVolume || payload.sizeOrVolume || "",
+    treeNeed: payload.treeNeed || "",
+    urgency: payload.urgency || payload.treeUrgency || "",
     zipCode: zip,
-    deliveryAddress: payload.deliveryAddress || (zip ? `ZIP Code ${zip}` : ""),
+    address: payload.address || payload.deliveryAddress || (zip ? `ZIP Code ${zip}` : ""),
+    deliveryAddress: payload.deliveryAddress || payload.address || (zip ? `ZIP Code ${zip}` : ""),
     city: resolvedCity,
     state: resolvedState,
     lat: resolvedLat,
@@ -134,14 +139,38 @@ export async function createPrefilledCheckoutToken(payload = {}) {
     customerPhone: payload.customerPhone || payload.phone || "",
     customerEmail: payload.customerEmail || payload.email || "",
     deliveryDate: payload.deliveryDate || null,
-    notes: payload.notes || payload.projectDescription || "",
+    notes: payload.notes || payload.projectDescription || payload.jobDescription || "",
     useCase: payload.useCase || payload.projectType || "",
     units: payload.units || payload.sizeOrVolume || "",
     duration: payload.duration || "",
     estimatedPrice: resolvedPrice,
+    junkAnalysis: payload.junkAnalysis || null,
+    treeAnalysis: payload.treeAnalysis || null,
+    manualReviewRequired: Boolean(
+      payload.manualReviewRequired ||
+      payload.treeAnalysis?.pricing_result?.manual_review_required ||
+      payload.junkAnalysis?.pricing_result?.manual_review_required
+    ),
+    manualReviewReasons:
+      payload.manualReviewReasons ||
+      payload.treeAnalysis?.pricing_result?.manual_review_reasons ||
+      payload.junkAnalysis?.pricing_result?.manual_review_reasons ||
+      [],
     imageUrls: Array.isArray(payload.imageUrls) ? payload.imageUrls : (Array.isArray(payload.photos) ? payload.photos : []),
     createdAt: new Date().toISOString(),
   };
+
+  const manualReviewRequired = Boolean(
+    sessionData.manualReviewRequired ||
+    sessionData.treeAnalysis?.pricing_result?.manual_review_required ||
+    sessionData.junkAnalysis?.pricing_result?.manual_review_required
+  );
+  const manualReviewReasons =
+    sessionData.manualReviewReasons?.length
+      ? sessionData.manualReviewReasons
+      : sessionData.treeAnalysis?.pricing_result?.manual_review_reasons ||
+        sessionData.junkAnalysis?.pricing_result?.manual_review_reasons ||
+        [];
 
   try {
     await redis.set(
@@ -158,8 +187,19 @@ export async function createPrefilledCheckoutToken(payload = {}) {
   const searchParams = new URLSearchParams();
   searchParams.set("ref_token", token);
   if (sessionData.zipCode) searchParams.set("zip", sessionData.zipCode);
+  if (sessionData.deliveryAddress || sessionData.address) {
+    searchParams.set("address", sessionData.deliveryAddress || sessionData.address);
+  }
+  if (sessionData.city) searchParams.set("city", sessionData.city);
+  if (sessionData.state) searchParams.set("state", sessionData.state);
+  if (sessionData.lat != null && sessionData.lng != null) {
+    searchParams.set("lat", String(sessionData.lat));
+    searchParams.set("lng", String(sessionData.lng));
+  }
   if (sessionData.sizeOrVolume) searchParams.set("size", sessionData.sizeOrVolume);
   if (sessionData.deliveryDate) searchParams.set("date", sessionData.deliveryDate);
+  if (sessionData.treeNeed) searchParams.set("need", sessionData.treeNeed);
+  if (sessionData.urgency) searchParams.set("urgency", sessionData.urgency);
 
   const checkoutUrl = `${BASE_FRONTEND_URL}/book/${slug}?${searchParams.toString()}`;
 
@@ -171,16 +211,30 @@ export async function createPrefilledCheckoutToken(payload = {}) {
     summary: {
       serviceType: sessionData.serviceType,
       sizeOrVolume: sessionData.sizeOrVolume,
+      treeNeed: sessionData.treeNeed,
+      urgency: sessionData.urgency,
+      items: sessionData.notes,
       zipCode: sessionData.zipCode,
+      address: sessionData.address || sessionData.deliveryAddress,
+      deliveryAddress: sessionData.deliveryAddress || sessionData.address,
+      city: sessionData.city,
+      state: sessionData.state,
+      lat: sessionData.lat,
+      lng: sessionData.lng,
       estimatedPrice: sessionData.estimatedPrice,
       deliveryDate: sessionData.deliveryDate,
+      photosCount: sessionData.imageUrls.length,
+      hasAiAnalysis: Boolean(sessionData.junkAnalysis || sessionData.treeAnalysis),
+      manualReviewRequired,
+      manualReviewReasons,
     },
     sessionData,
   };
 }
 
 /**
- * Resolves a checkout session by token from Redis
+ * Resolves a checkout session by token from Redis, with automatic
+ * sessionBuffer / SalesConversation fallback for chk_<sessionId> tokens.
  * @param {string} token
  * @returns {Promise<Object|null>}
  */
@@ -189,11 +243,113 @@ export async function getCheckoutSession(token) {
   const cacheKey = `${KEY_PREFIX}${token}`;
   try {
     const raw = await redis.get(cacheKey);
-    return raw ? JSON.parse(raw) : null;
+    if (raw) return JSON.parse(raw);
   } catch (err) {
     logger.error(`Error resolving checkout token ${token}:`, err);
-    return null;
   }
+
+  // Fallback: If token is `chk_${sessionId}` or contains uuid
+  const sessionId = token.replace(/^chk_/, "");
+  if (sessionId) {
+    try {
+      // 1. Try reading funnel_state from Redis
+      const fsRaw = await redis.get(`sales:session:${sessionId}:funnel_state`);
+      let collectedData = null;
+      if (fsRaw) {
+        try {
+          const fsParsed = JSON.parse(fsRaw);
+          collectedData = fsParsed?.collectedData || null;
+        } catch {
+          /* ignore parse error */
+        }
+      }
+
+      // 2. Try reading meta from Redis
+      if (!collectedData) {
+        const metaRaw = await redis.get(`sales:session:${sessionId}:meta`);
+        if (metaRaw) {
+          try {
+            const metaParsed = JSON.parse(metaRaw);
+            collectedData = metaParsed?.collectedData || null;
+          } catch {
+            /* ignore parse error */
+          }
+        }
+      }
+
+      // 3. Fallback to MongoDB SalesConversation
+      if (!collectedData) {
+        const conv = await SalesConversation.findOne({ sessionId }).lean();
+        collectedData = conv?.collectedData || null;
+      }
+
+      if (collectedData) {
+        const zip = collectedData.zipCode ? String(collectedData.zipCode).trim() : "";
+        const normalizedService = normalizeSalesServiceType(
+          collectedData.serviceType || "Dumbster"
+        );
+
+        const resolvedAddress =
+          collectedData.address ||
+          collectedData.deliveryAddress ||
+          (zip ? `ZIP Code ${zip}` : "");
+
+        const sessionData = {
+          token,
+          ref_token: token,
+          serviceType: normalizedService,
+          sizeOrVolume: collectedData.sizeOrVolume || "",
+          zipCode: zip,
+          address: resolvedAddress,
+          deliveryAddress: resolvedAddress,
+          city: collectedData.city || "",
+          state: collectedData.state || "",
+          lat: collectedData.lat != null ? Number(collectedData.lat) : null,
+          lng: collectedData.lng != null ? Number(collectedData.lng) : null,
+          customerName:
+            collectedData.contactName || collectedData.name || "",
+          customerPhone: collectedData.phone || "",
+          customerEmail: collectedData.email || "",
+          deliveryDate: collectedData.deliveryDate || null,
+          notes:
+            collectedData.notes || collectedData.projectDescription || "",
+          useCase:
+            collectedData.useCase ||
+            collectedData.projectType ||
+            collectedData.businessType ||
+            "",
+          units: collectedData.units || collectedData.sizeOrVolume || "",
+          duration:
+            collectedData.duration || collectedData.serviceFrequency || 1,
+          estimatedPrice: collectedData.estimatedPrice || null,
+          junkAnalysis: collectedData.junkAnalysis || null,
+          treeAnalysis: collectedData.treeAnalysis || null,
+          imageUrls: collectedData.imageUrls || collectedData.photos || [],
+        };
+
+        // Cache into Redis for 30 minutes so subsequent calls are instant
+        try {
+          await redis.set(
+            cacheKey,
+            JSON.stringify(sessionData),
+            "EX",
+            CHECKOUT_TOKEN_TTL_SECONDS
+          );
+        } catch {
+          /* ignore cache write error */
+        }
+
+        return sessionData;
+      }
+    } catch (err) {
+      logger.error(
+        `Error resolving checkout session from session buffer for ${token}:`,
+        err
+      );
+    }
+  }
+
+  return null;
 }
 
 export default {

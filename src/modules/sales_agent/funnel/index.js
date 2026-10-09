@@ -5,8 +5,12 @@ export {
   updateSessionFunnelState,
   getSessionFunnelState,
   getLiveDumpsterSizes,
+  getUnfinishedBookingSummary,
+  formatFriendlyLabel,
+  isQuestionOrInquiry,
   normalizeDate,
   PRIMARY_INTENT_OPTIONS,
   SERVICE_SELECTION_OPTIONS,
+  PROVIDER_SERVICE_OPTIONS,
   DEFAULT_DUMPSTER_SIZES,
 } from "./funnelState.service.js";

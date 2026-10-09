@@ -8,6 +8,7 @@ import {
   updateOnItsWay,
   fetchRenterOrder,
   fetchrequestOrderRentee,
+  getRenteeOrderById,
   deleteRenterOrder,
   checkRate,
   adminOrder,
@@ -822,6 +823,7 @@ router.get("/rentee/checkRate", checkRate);
  *         description: Internal server error
  */
 router.get("/rentee/timeline/:id", getOrderTimeline);
+router.get("/rentee/order/:id", getRenteeOrderById);
 /**
  * @swagger
  * /api/order/rentee/order/{id}:

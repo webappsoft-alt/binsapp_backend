@@ -12,7 +12,7 @@ const leadSchema = new Schema(
     notes: { type: String, default: "" },
     status: {
       type: String,
-      enum: ["new", "contacted", "converted"],
+      enum: ["new", "contacted", "converted", "rejected"],
       default: "new",
       index: true,
     },

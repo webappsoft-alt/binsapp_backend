@@ -212,7 +212,7 @@ class SalesKnowledgeService {
   /**
    * Retrieves paginated conversation history transcripts for admin review
    */
-  async listConversations({ page = 1, limit = 20, funnel, search } = {}) {
+  async listConversations({ page = 1, limit = 20, funnel, search, sortBy = "updatedAt", sortOrder = "desc" } = {}) {
     const query = {};
 
     if (funnel) {
@@ -230,10 +230,13 @@ class SalesKnowledgeService {
     const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
     const skip = (pageNum - 1) * limitNum;
 
+    const sortDir = String(sortOrder).toLowerCase() === "asc" ? 1 : -1;
+    const sortField = ["createdAt", "updatedAt", "currentFunnel"].includes(sortBy) ? sortBy : "updatedAt";
+
     const [conversations, total] = await Promise.all([
       SalesConversation.find(query)
         .populate("leadRef")
-        .sort({ updatedAt: -1 })
+        .sort({ [sortField]: sortDir })
         .skip(skip)
         .limit(limitNum)
         .lean(),
@@ -261,6 +264,12 @@ class SalesKnowledgeService {
 
     if (!conversation) {
       throw new NotFoundError("Conversation session not found");
+    }
+
+    if (conversation && Array.isArray(conversation.messages)) {
+      conversation.messages.sort(
+        (a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0)
+      );
     }
 
     return conversation;

@@ -1,5 +1,8 @@
 import { getOpenAIClient } from "../../utils/salesEmbedding.js";
 import { logger } from "../../config/logger.js";
+import { normalizeSalesServiceType } from "../../models/SalesLead.js";
+import { processJunkAnalysisInBackground } from "../../utils/JunkRemovalVisionProcessor.js";
+import { processTreeAnalysisInBackground } from "../../utils/OpenAIVisionBackgroundProcessor.js";
 import {
   getCachedOrFetchEmbedding,
   retrieveRelevantKnowledge,
@@ -19,7 +22,11 @@ import {
   getSessionFunnelState,
   generateStepActionCard,
   getLiveDumpsterSizes,
+  getUnfinishedBookingSummary,
+  isQuestionOrInquiry,
 } from "./funnel/index.js";
+import User from "../../models/User.js";
+import { getUserRegisteredServices } from "./utils/userRegistration.util.js";
 
 const MODEL_NAME = "gpt-4o-mini";
 
@@ -38,14 +45,33 @@ const MODEL_NAME = "gpt-4o-mini";
  */
 export async function orchestrateSalesConversation({
   sessionId,
+  userId = null,
+  visitorId = null,
   userMessage,
   funnel = "unknown",
   visitorLocation = null,
+  explicitLocation = null,
   onToken = () => {},
   onActionCard = () => {},
 }) {
   const client = getOpenAIClient();
   const actionCards = [];
+
+  // Fetch user registration info if authenticated
+  let registeredServices = {};
+  if (userId) {
+    try {
+      const userDoc = await User.findById(userId)
+        .populate(["junkRemoval", "treeRemoval", "company"])
+        .select("-password")
+        .lean();
+      if (userDoc) {
+        registeredServices = getUserRegisteredServices(userDoc);
+      }
+    } catch (uErr) {
+      logger.warn(`[SalesAgent] Failed to fetch user ${userId} for registration check:`, uErr?.message);
+    }
+  }
 
   // 1. Fetch current funnel state and extract multi-field entities from message
   const previousFunnelState = await getSessionFunnelState(sessionId);
@@ -53,13 +79,119 @@ export async function orchestrateSalesConversation({
     userMessage,
     previousFunnelState.collectedData || {}
   );
-
-  // If visitor location was provided, merge zip into collectedData if not present
-  if (visitorLocation?.zip && !newlyExtracted.zipCode) {
-    newlyExtracted.zipCode = visitorLocation.zip;
+  if (newlyExtracted.registeredServices) {
+    delete newlyExtracted.registeredServices;
   }
 
-  const currentFunnelToUse = funnel !== "unknown" ? funnel : previousFunnelState.currentFunnel;
+  // If user explicitly sent location (from LocationPickerCard, LeadFormCard, or options.location):
+  if (explicitLocation) {
+    if (explicitLocation.address || explicitLocation.deliveryAddress) {
+      newlyExtracted.address = explicitLocation.address || explicitLocation.deliveryAddress;
+      newlyExtracted.deliveryAddress = explicitLocation.deliveryAddress || explicitLocation.address;
+    }
+    if (explicitLocation.zipCode || explicitLocation.zip) {
+      newlyExtracted.zipCode = explicitLocation.zipCode || explicitLocation.zip;
+      newlyExtracted.baseZip = newlyExtracted.zipCode;
+    }
+    if (explicitLocation.city) newlyExtracted.city = explicitLocation.city;
+    if (explicitLocation.state) newlyExtracted.state = explicitLocation.state;
+    if (explicitLocation.lat != null && Number.isFinite(Number(explicitLocation.lat))) {
+      newlyExtracted.lat = Number(explicitLocation.lat);
+    }
+    if (explicitLocation.lng != null && Number.isFinite(Number(explicitLocation.lng))) {
+      newlyExtracted.lng = Number(explicitLocation.lng);
+    }
+  }
+
+  // If newlyExtracted has zipCode or address, fill remaining coordinates/city/state from visitorLocation if present
+  if ((newlyExtracted.zipCode || newlyExtracted.address) && visitorLocation) {
+    if (!newlyExtracted.city && visitorLocation.city) newlyExtracted.city = visitorLocation.city;
+    if (!newlyExtracted.state && visitorLocation.state) newlyExtracted.state = visitorLocation.state;
+    if (newlyExtracted.lat == null && visitorLocation.lat != null && Number.isFinite(Number(visitorLocation.lat))) {
+      newlyExtracted.lat = Number(visitorLocation.lat);
+    }
+    if (newlyExtracted.lng == null && visitorLocation.lng != null && Number.isFinite(Number(visitorLocation.lng))) {
+      newlyExtracted.lng = Number(visitorLocation.lng);
+    }
+    if (!newlyExtracted.address && visitorLocation.address) {
+      newlyExtracted.address = visitorLocation.address;
+      newlyExtracted.deliveryAddress = visitorLocation.address;
+    }
+  }
+
+  // Store detected visitor ZIP as suggestion, but DO NOT auto-fill zipCode unless explicitly given
+  if (visitorLocation?.zip && !newlyExtracted.detectedZip) {
+    newlyExtracted.detectedZip = visitorLocation.zip;
+  }
+
+  let currentFunnelToUse = funnel !== "unknown" ? funnel : previousFunnelState.currentFunnel;
+  if (newlyExtracted.resetService || (newlyExtracted.primaryIntent === "I NEED A SERVICE" && !newlyExtracted.serviceType)) {
+    currentFunnelToUse = "service_booking";
+  } else if (newlyExtracted.primaryIntent === "I WANT TO JOIN AS A PROVIDER") {
+    currentFunnelToUse = "provider_onboarding";
+  } else if (newlyExtracted.primaryIntent === "I’M A BUILDER / COMMERCIAL CUSTOMER") {
+    currentFunnelToUse = "commercial_builder";
+  } else if (newlyExtracted.serviceType) {
+    const norm = normalizeSalesServiceType(newlyExtracted.serviceType);
+    if (norm === "Junk Removal") currentFunnelToUse = "junk_removal";
+    else if (norm === "Tree Removal") currentFunnelToUse = "tree_service";
+    else if (norm === "Porta Potty") currentFunnelToUse = "porta_potty";
+    else if (norm === "Dumbster") currentFunnelToUse = "dumpster_rental";
+  }
+
+  // Instant AI Vision Analysis for Junk Removal & Tree Service when photos are uploaded
+  const photosList = Array.isArray(newlyExtracted.photos) ? newlyExtracted.photos : [];
+  if (photosList.length >= 2) {
+    const region = newlyExtracted.zipCode || visitorLocation?.zip || visitorLocation?.city || "global";
+
+    if (currentFunnelToUse === "junk_removal" && !newlyExtracted.junkAnalysis) {
+      try {
+        logger.info(`[SalesAgent] Executing AI Vision analysis on ${photosList.length} Junk Removal images for session ${sessionId}...`);
+        const analysis = await processJunkAnalysisInBackground(photosList.slice(0, 5), region);
+        if (analysis?.ai_detection) {
+          newlyExtracted.junkAnalysis = analysis;
+          const quote = analysis.pricing_result?.quote || analysis.pricing_result?.final_quote;
+          if (quote) {
+            newlyExtracted.estimatedPrice = quote;
+          }
+          if (analysis.pricing_result?.manual_review_required != null) {
+            newlyExtracted.manualReviewRequired = Boolean(analysis.pricing_result.manual_review_required);
+            newlyExtracted.manualReviewReasons = analysis.pricing_result.manual_review_reasons || [];
+          }
+          if (analysis.ai_detection.estimated_cubic_yards) {
+            newlyExtracted.aiEstimatedCubicYards = analysis.ai_detection.estimated_cubic_yards;
+          }
+          logger.info(`[SalesAgent] Junk Vision complete: ${analysis.ai_detection.estimated_cubic_yards} cy, Quote $${newlyExtracted.estimatedPrice}, ManualReview: ${newlyExtracted.manualReviewRequired}`);
+        }
+      } catch (junkErr) {
+        logger.error(`[SalesAgent] Junk removal vision processing failed for session ${sessionId}:`, junkErr?.message || junkErr);
+      }
+    } else if (currentFunnelToUse === "tree_service" && !newlyExtracted.treeAnalysis) {
+      try {
+        logger.info(`[SalesAgent] Executing AI Vision analysis on ${photosList.length} Tree Service images for session ${sessionId}...`);
+        const analysis = await processTreeAnalysisInBackground(photosList.slice(0, 5), region);
+        if (analysis?.ai_detection) {
+          newlyExtracted.treeAnalysis = analysis;
+          const quote = analysis.pricing_result?.quote || analysis.pricing_result?.final_quote;
+          if (quote) {
+            newlyExtracted.estimatedPrice = quote;
+          }
+          if (analysis.pricing_result?.manual_review_required != null) {
+            newlyExtracted.manualReviewRequired = Boolean(analysis.pricing_result.manual_review_required);
+            newlyExtracted.manualReviewReasons = analysis.pricing_result.manual_review_reasons || [];
+          }
+          if (analysis.ai_detection.estimated_height_ft) {
+            newlyExtracted.aiEstimatedHeightFt = analysis.ai_detection.estimated_height_ft;
+            newlyExtracted.aiEstimatedDbhIn = analysis.ai_detection.estimated_dbh_in;
+            newlyExtracted.aiTreeType = analysis.ai_detection.tree_type;
+          }
+          logger.info(`[SalesAgent] Tree Vision complete: ${analysis.ai_detection.estimated_height_ft} ft, Quote $${newlyExtracted.estimatedPrice}, ManualReview: ${newlyExtracted.manualReviewRequired}`);
+        }
+      } catch (treeErr) {
+        logger.error(`[SalesAgent] Tree service vision processing failed for session ${sessionId}:`, treeErr?.message || treeErr);
+      }
+    }
+  }
 
   // Persist updated funnel state to Redis
   const funnelState = await updateSessionFunnelState(sessionId, {
@@ -95,8 +227,10 @@ export async function orchestrateSalesConversation({
   // Check and recover session if visitor was previously marked as abandoned
   await handleSessionResumption(sessionId, userMessage, history);
 
-  // Fetch live inventory specifications from database
-  const liveSizes = await getLiveDumpsterSizes();
+  // Fetch live dumpster inventory specifications ONLY if in dumpster rental funnel
+  const liveSizes = funnelState.currentFunnel === "dumpster_rental"
+    ? await getLiveDumpsterSizes()
+    : null;
 
   // 5. Build augmented prompt messages with funnelState context and live inventory
   const messages = buildAugmentedPrompt({
@@ -107,6 +241,7 @@ export async function orchestrateSalesConversation({
     history,
     userQuery: userMessage,
     visitorLocation,
+    registeredServices,
   });
 
   // 6. Invoke OpenAI streaming chat completion with tools
@@ -186,7 +321,11 @@ export async function orchestrateSalesConversation({
     for (const tc of toolCalls) {
       const toolName = tc.function?.name || tc.name;
       const toolArgs = tc.function?.arguments || tc.arguments;
-      const executionResult = await executeToolCall(toolName, toolArgs, { sessionId });
+      const executionResult = await executeToolCall(toolName, toolArgs, {
+        sessionId,
+        activeFunnel: funnelState.currentFunnel,
+        visitorLocation: explicitLocation || visitorLocation,
+      });
 
       if (executionResult.actionCard) {
         const toolMeta = await getSessionFunnelState(sessionId);
@@ -227,13 +366,31 @@ export async function orchestrateSalesConversation({
 
   // 8. If no tool card was produced, check if the current step warrants a contextual action card
   const refreshedFunnelState = await getSessionFunnelState(sessionId);
-  if (actionCards.length === 0) {
+  refreshedFunnelState.unfinishedBooking = getUnfinishedBookingSummary(refreshedFunnelState);
+
+  const stepChanged = previousFunnelState.currentStep !== refreshedFunnelState.currentStep;
+  const isExplicitResumeOrStart =
+    /\b(resume|continue|start over|restart|show form|open form)\b/i.test(userMessage.trim()) ||
+    userMessage.trim().toLowerCase() === "resume" ||
+    userMessage.trim().toLowerCase() === "continue" ||
+    userMessage.trim().toLowerCase() === "resume my booking";
+
+  const userAskedQuestion = isQuestionOrInquiry(userMessage);
+
+  // Do NOT attach contextual cards if user asked a question or if step did not change (unless explicit resume)
+  const shouldEmitStepCard =
+    actionCards.length === 0 &&
+    !userAskedQuestion &&
+    (stepChanged || isExplicitResumeOrStart);
+
+  if (shouldEmitStepCard) {
     const contextualCard = generateStepActionCard(
       refreshedFunnelState.currentFunnel,
       refreshedFunnelState.currentStep,
       refreshedFunnelState.collectedData,
       sessionId,
-      liveSizes
+      liveSizes,
+      registeredServices
     );
     if (contextualCard) {
       actionCards.push(contextualCard);
@@ -252,10 +409,16 @@ export async function orchestrateSalesConversation({
   // 9. Store dialogue turn in Redis sliding window buffer (2h TTL) and async flush to MongoDB
   await appendMessage(
     sessionId,
-    { role: "user", content: userMessage },
+    {
+      role: "user",
+      content: userMessage,
+      timestamp: new Date().toISOString(),
+    },
     {
       currentFunnel: refreshedFunnelState.currentFunnel,
       visitorInfo: visitorLocation,
+      visitorId,
+      userId,
     }
   );
 
@@ -278,10 +441,13 @@ export async function orchestrateSalesConversation({
       content: fullAssistantText,
       toolCalls: serializedToolCalls,
       actionCards: actionCards.length > 0 ? actionCards : [],
+      timestamp: new Date().toISOString(),
     },
     {
       currentFunnel: refreshedFunnelState.currentFunnel,
       actionCards,
+      visitorId,
+      userId,
     }
   );
 

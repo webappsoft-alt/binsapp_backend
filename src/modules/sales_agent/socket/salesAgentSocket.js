@@ -1,4 +1,8 @@
 import { Server } from "socket.io";
+import jwt from "jsonwebtoken";
+import config from "../../../config/env.js";
+import SalesConversation from "../../../models/SalesConversation.js";
+import SalesLead from "../../../models/SalesLead.js";
 import { orchestrateSalesConversation } from "../orchestrator.service.js";
 import {
   getSessionHistory,
@@ -12,8 +16,20 @@ import {
   releaseSessionToAI,
   recordVisitorHandoffRequest,
 } from "./handoff.service.js";
-import { generateStepActionCard, getLiveDumpsterSizes } from "../funnel/index.js";
+import { generateStepActionCard, getLiveDumpsterSizes, getUnfinishedBookingSummary } from "../funnel/index.js";
 import { logger } from "../../../config/logger.js";
+
+let salesNamespaceInstance = null;
+
+/**
+ * Emits lead status update directly to a visitor's active sales agent session
+ */
+export function notifyVisitorLeadStatusUpdate(sessionId, leadData) {
+  if (salesNamespaceInstance && sessionId) {
+    salesNamespaceInstance.to(sessionId).emit("sales:lead_status_updated", leadData);
+    logger.info(`📢 Emitted sales:lead_status_updated to session ${sessionId}: status=${leadData?.status}`);
+  }
+}
 
 /**
  * Initializes the dedicated `/sales-agent` Socket.io gateway namespace
@@ -28,6 +44,7 @@ export function initSalesAgentSocket(io) {
   }
 
   const salesNamespace = io.of("/sales-agent");
+  salesNamespaceInstance = salesNamespace;
 
   // Connection authentication and session validation middleware
   salesNamespace.use(async (socket, next) => {
@@ -42,6 +59,13 @@ export function initSalesAgentSocket(io) {
 
       socket.sessionId = sessionId.trim();
 
+      // Extract persistent visitor ID for visitor-level session grouping
+      const visitorId =
+        socket.handshake.auth?.visitorId ||
+        socket.handshake.query?.visitorId ||
+        null;
+      socket.visitorId = visitorId && typeof visitorId === "string" ? visitorId.trim() : null;
+
       // Extract visitor location context if passed in handshake
       if (socket.handshake.auth?.location) {
         try {
@@ -54,6 +78,37 @@ export function initSalesAgentSocket(io) {
         }
       }
 
+      // Extract optional user auth token to bind chat history to account
+      const authToken =
+        socket.handshake.auth?.token ||
+        socket.handshake.query?.token;
+      if (authToken) {
+        let decoded = null;
+        const secret = config.get("jwtSecret");
+        if (secret) {
+          try {
+            decoded = jwt.verify(authToken, secret);
+          } catch {
+            decoded = null;
+          }
+        }
+        if (!decoded) {
+          const altSecret = config.get("jwtIDPrivateKey");
+          if (altSecret) {
+            try {
+              decoded = jwt.verify(authToken, altSecret);
+            } catch {
+              decoded = null;
+            }
+          }
+        }
+        if (decoded?._id) {
+          socket.userId = String(decoded._id);
+        } else {
+          socket.userId = null;
+        }
+      }
+
       next();
     } catch (err) {
       logger.error("Error in sales-agent socket middleware:", err);
@@ -62,7 +117,7 @@ export function initSalesAgentSocket(io) {
   });
 
   salesNamespace.on("connection", (socket) => {
-    const sessionId = socket.sessionId;
+    let sessionId = socket.sessionId;
     socket.join(sessionId);
 
     logger.info(`🤖 AI Sales Agent Client Connected: ${socket.id} (Session: ${sessionId})`);
@@ -144,7 +199,12 @@ export function initSalesAgentSocket(io) {
       // 2. Buffer message into conversation history
       await appendMessage(
         targetSessionId,
-        { role: "assistant", content: `[${operatorName}]: ${messageText}` }
+        {
+          role: "operator",
+          content: messageText,
+          operatorName,
+          timestamp: new Date().toISOString(),
+        }
       );
 
       if (typeof callback === "function") callback({ success: true });
@@ -179,12 +239,80 @@ export function initSalesAgentSocket(io) {
     });
 
     /**
+     * Event: sales:reset_session
+     * Visitor resets dialogue and begins a fresh conversation
+     */
+    socket.on("sales:reset_session", async (data, callback) => {
+      try {
+        const newSessionId = (data?.newSessionId || `sess_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`).trim();
+        if (sessionId) {
+          socket.leave(sessionId);
+        }
+        sessionId = newSessionId;
+        socket.sessionId = newSessionId;
+        socket.join(newSessionId);
+        logger.info(`🔄 Session reset for socket ${socket.id} -> ${newSessionId}`);
+        if (typeof callback === "function") {
+          callback({ success: true, sessionId: newSessionId });
+        }
+      } catch (err) {
+        logger.error("Error resetting session:", err);
+        if (typeof callback === "function") {
+          callback({ success: false, error: err?.message });
+        }
+      }
+    });
+
+    /**
      * Event: sales:init_session
      * Restores existing conversation history, metadata, and active action cards from Redis
      */
     socket.on("sales:init_session", async (payload, callback) => {
       try {
-        const history = await getSessionHistory(sessionId, 10);
+        if (payload?.sessionId && payload.sessionId !== sessionId) {
+          socket.leave(sessionId);
+          sessionId = payload.sessionId.trim();
+          socket.sessionId = sessionId;
+          socket.join(sessionId);
+        }
+
+        if (payload?.visitorId && typeof payload.visitorId === "string") {
+          socket.visitorId = payload.visitorId.trim();
+        }
+
+        if (payload?.token && !socket.userId) {
+          let decoded = null;
+          const secret = config.get("jwtSecret");
+          if (secret) {
+            try {
+              decoded = jwt.verify(payload.token, secret);
+            } catch {
+              decoded = null;
+            }
+          }
+          if (!decoded) {
+            const altSecret = config.get("jwtIDPrivateKey");
+            if (altSecret) {
+              try {
+                decoded = jwt.verify(payload.token, altSecret);
+              } catch {
+                decoded = null;
+              }
+            }
+          }
+          if (decoded?._id) {
+            socket.userId = String(decoded._id);
+          }
+        }
+
+        if (socket.userId) {
+          SalesConversation.updateOne(
+            { sessionId, $or: [{ userId: null }, { userId: { $exists: false } }] },
+            { $set: { userId: socket.userId } }
+          ).catch(() => {});
+        }
+
+        const history = await getSessionHistory(sessionId, 100);
         const meta = await getSessionMeta(sessionId);
         const handoffState = await getSessionHandoffState(sessionId);
 
@@ -212,15 +340,50 @@ export function initSalesAgentSocket(io) {
           }
         }
 
+        let leadInfo = null;
+        try {
+          let lead = null;
+          const conv = await SalesConversation.findOne({ sessionId })
+            .select("leadRef")
+            .populate("leadRef")
+            .lean();
+          if (conv?.leadRef) {
+            lead = conv.leadRef;
+          } else {
+            lead = await SalesLead.findOne({
+              $or: [
+                { "metadata.sessionId": sessionId },
+                { conversationRef: conv?._id },
+              ],
+            })
+              .sort({ updatedAt: -1 })
+              .lean();
+          }
+          if (lead) {
+            leadInfo = {
+              id: String(lead._id),
+              status: lead.status || "new",
+              classification: lead.classification || "WARM",
+              serviceType: lead.serviceDetails?.serviceType || "Dumbster",
+              updatedAt: lead.updatedAt || lead.createdAt,
+            };
+          }
+        } catch (leadLookupErr) {
+          logger.warn("Failed to lookup lead info for session:", leadLookupErr?.message);
+        }
+
         const responseData = {
           sessionId,
           history,
+          leadInfo,
           meta: {
             currentFunnel: meta.currentFunnel || "initial_intent",
             currentStep: meta.currentStep || "intent_selection",
             nextStep: meta.nextStep || "service_selection",
             missingFields: meta.missingFields || [],
             collectedData: meta.collectedData || {},
+            unfinishedBooking: getUnfinishedBookingSummary(meta),
+            leadInfo,
           },
           actionCards,
           isPaused: handoffState.isPaused,
@@ -249,6 +412,9 @@ export function initSalesAgentSocket(io) {
       const userMessage = data?.message || (typeof data === "string" ? data : "");
       const funnel = data?.funnel || "unknown";
       const location = data?.location || socket.visitorLocation;
+      if (data?.location) {
+        socket.visitorLocation = { ...(socket.visitorLocation || {}), ...data.location };
+      }
 
       if (!userMessage || typeof userMessage !== "string" || userMessage.trim().length === 0) {
         if (typeof callback === "function") {
@@ -281,9 +447,12 @@ export function initSalesAgentSocket(io) {
       try {
         const result = await orchestrateSalesConversation({
           sessionId,
+          userId: socket.userId || null,
+          visitorId: socket.visitorId || null,
           userMessage: userMessage.trim(),
           funnel,
           visitorLocation: location,
+          explicitLocation: data?.location || null,
           onToken: ({ token, chunkIndex }) => {
             socket.emit("sales:stream_token", {
               token,

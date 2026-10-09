@@ -7,4 +7,6 @@ export {
   getSalesAgentMetrics,
   exportLeadsAsCSV,
   resolveStartDate,
+  listSalesLeads,
+  updateSalesLead,
 } from "./analytics.service.js";

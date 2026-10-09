@@ -48,8 +48,12 @@ const messageSchema = new Schema(
   {
     role: {
       type: String,
-      enum: ["system", "user", "assistant", "tool"],
+      enum: ["system", "user", "assistant", "tool", "operator"],
       required: true,
+    },
+    operatorName: {
+      type: String,
+      default: null,
     },
     content: {
       type: String,
@@ -77,6 +81,27 @@ const salesConversationSchema = new Schema(
       type: String,
       required: true,
       unique: true,
+      index: true,
+    },
+    userId: {
+      type: Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+      index: true,
+    },
+    visitorId: {
+      type: String,
+      default: null,
+      index: true,
+    },
+    title: {
+      type: String,
+      default: "",
+    },
+    status: {
+      type: String,
+      enum: ["active", "archived", "deleted"],
+      default: "active",
       index: true,
     },
     visitorInfo: {
@@ -126,6 +151,8 @@ const salesConversationSchema = new Schema(
   { timestamps: true }
 );
 
+salesConversationSchema.index({ userId: 1, updatedAt: -1 });
+salesConversationSchema.index({ visitorId: 1, updatedAt: -1 });
 salesConversationSchema.index({ currentFunnel: 1, createdAt: -1 });
 
 const SalesConversation = model("SalesConversation", salesConversationSchema);

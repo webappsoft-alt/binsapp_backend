@@ -6,6 +6,11 @@ const contactSchema = new Schema(
     phone: { type: String, trim: true, default: "" },
     email: { type: String, trim: true, lowercase: true, default: "" },
     zipCode: { type: String, trim: true, default: "" },
+    address: { type: String, trim: true, default: "" },
+    city: { type: String, trim: true, default: "" },
+    state: { type: String, trim: true, default: "" },
+    lat: { type: Number, default: null },
+    lng: { type: Number, default: null },
   },
   { _id: false }
 );
@@ -13,17 +18,17 @@ const contactSchema = new Schema(
 export function normalizeSalesServiceType(val) {
   if (!val || typeof val !== "string") return "Dumbster";
   const normalized = val.trim().toLowerCase().replace(/[-_]/g, " ");
-  if (normalized.includes("dumpster") || normalized.includes("dumbster") || normalized.includes("bin")) {
-    return "Dumbster";
-  }
-  if (normalized.includes("porta") || normalized.includes("potty") || normalized.includes("toilet")) {
-    return "Porta Potty";
-  }
-  if (normalized.includes("junk")) {
-    return "Junk Removal";
-  }
   if (normalized.includes("tree")) {
     return "Tree Removal";
+  }
+  if (normalized.includes("junk") || normalized.includes("haul away") || normalized.includes("cleanout")) {
+    return "Junk Removal";
+  }
+  if (normalized.includes("porta") || normalized.includes("potty") || normalized.includes("toilet") || normalized.includes("restroom")) {
+    return "Porta Potty";
+  }
+  if (normalized.includes("dumpster") || normalized.includes("dumbster") || normalized.includes("roll off") || /\b(bin|bins)\b/.test(normalized)) {
+    return "Dumbster";
   }
   return "Other";
 }
@@ -62,8 +67,8 @@ const salesLeadSchema = new Schema(
     },
     status: {
       type: String,
-      enum: ["active_chat", "converted", "abandoned", "handed_off"],
-      default: "active_chat",
+      enum: ["new", "active_chat", "contacted", "converted", "abandoned", "handed_off", "rejected"],
+      default: "new",
       index: true,
     },
     prefilledCheckoutToken: {

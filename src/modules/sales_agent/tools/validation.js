@@ -16,6 +16,8 @@ export const checkServiceCoverageArgsSchema = Joi.object({
       "any.only": "serviceType must be one of: 'Dumbster', 'Porta Potty', 'Junk Removal', 'Tree Removal'",
       "any.required": "serviceType is required",
     }),
+  address: Joi.string().trim().allow("").optional(),
+  location: Joi.object().optional(),
 });
 
 export const captureLeadProfileArgsSchema = Joi.object({
@@ -27,6 +29,11 @@ export const captureLeadProfileArgsSchema = Joi.object({
   }),
   email: Joi.string().email().allow("").optional(),
   zipCode: Joi.string().trim().allow("").optional(),
+  address: Joi.string().trim().allow("").optional(),
+  city: Joi.string().trim().allow("").optional(),
+  state: Joi.string().trim().allow("").optional(),
+  lat: Joi.number().allow(null).optional(),
+  lng: Joi.number().allow(null).optional(),
   serviceType: Joi.string()
     .valid("Dumbster", "Porta Potty", "Junk Removal", "Tree Removal", "Other")
     .default("Dumbster"),
@@ -52,6 +59,11 @@ export const generatePrefilledCheckoutArgsSchema = Joi.object({
       "string.pattern.base": "ZIP code must be a valid 5-digit US postal code",
       "any.required": "zipCode is required",
     }),
+  address: Joi.string().trim().allow("").optional(),
+  city: Joi.string().trim().allow("").optional(),
+  state: Joi.string().trim().allow("").optional(),
+  lat: Joi.number().allow(null).optional(),
+  lng: Joi.number().allow(null).optional(),
   deliveryDate: Joi.string().trim().allow("").optional(),
   customerName: Joi.string().trim().allow("").optional(),
   customerPhone: Joi.string().trim().allow("").optional(),
@@ -75,11 +87,21 @@ export const escalateToHumanOrCommercialArgsSchema = Joi.object({
   }),
 });
 
+export const findNearbyDumpsterProvidersArgsSchema = Joi.object({
+  zipCode: Joi.string().trim().allow("").optional(),
+  address: Joi.string().trim().allow("").optional(),
+  radiusMiles: Joi.number().min(1).max(100).default(40),
+  serviceType: Joi.string()
+    .valid("Dumbster", "Junk Removal", "Tree Removal", "Porta Potty")
+    .default("Dumbster"),
+});
+
 const TOOL_SCHEMAS = {
   check_service_coverage: checkServiceCoverageArgsSchema,
   capture_lead_profile: captureLeadProfileArgsSchema,
   generate_prefilled_checkout: generatePrefilledCheckoutArgsSchema,
   escalate_to_human_or_commercial: escalateToHumanOrCommercialArgsSchema,
+  find_nearby_dumpster_providers: findNearbyDumpsterProvidersArgsSchema,
 };
 
 /**

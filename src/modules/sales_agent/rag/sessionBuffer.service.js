@@ -4,7 +4,8 @@ import { logger } from "../../../config/logger.js";
 import { getSessionFunnelState } from "../funnel/index.js";
 
 const SESSION_TTL_SECONDS = 7200; // 2 Hours sliding window
-const MAX_SLIDING_WINDOW = 10;     // Max messages in in-memory working buffer
+const MAX_SLIDING_WINDOW = 10;     // Messages for OpenAI prompt context
+const MAX_STORED_HISTORY = 100;    // Max messages kept in working buffer for visitor history
 
 /**
  * Generates Redis key for session message list
@@ -25,10 +26,10 @@ export function getSessionMetaKey(sessionId) {
 }
 
 /**
- * Appends a message to the Redis sliding window buffer and updates session metadata
+ * Appends a message to the Redis buffer and updates session metadata
  *
  * @param {string} sessionId - Unique session ID
- * @param {Object} message - { role, content, toolCalls, actionCards, timestamp }
+ * @param {Object} message - { role, content, toolCalls, actionCards, timestamp, operatorName }
  * @param {Object} [meta={}] - Session metadata { currentFunnel, visitorInfo, leadRef, actionCards }
  * @returns {Promise<void>}
  */
@@ -41,6 +42,7 @@ export async function appendMessage(sessionId, message, meta = {}) {
   const formattedMsg = {
     role: message.role,
     content: message.content || "",
+    operatorName: message.operatorName || null,
     toolCalls: message.toolCalls || [],
     actionCards: message.actionCards || [],
     timestamp: message.timestamp || new Date().toISOString(),
@@ -49,9 +51,9 @@ export async function appendMessage(sessionId, message, meta = {}) {
   try {
     const pipeline = redis.pipeline();
 
-    // Push message to list and trim to maintain sliding window of 10 items
+    // Push message to list and keep up to MAX_STORED_HISTORY items
     pipeline.rpush(msgKey, JSON.stringify(formattedMsg));
-    pipeline.ltrim(msgKey, -MAX_SLIDING_WINDOW, -1);
+    pipeline.ltrim(msgKey, -MAX_STORED_HISTORY, -1);
     pipeline.expire(msgKey, SESSION_TTL_SECONDS);
 
     // Update metadata hash if provided
@@ -60,6 +62,7 @@ export async function appendMessage(sessionId, message, meta = {}) {
     };
     if (meta.currentFunnel) hashFields.currentFunnel = meta.currentFunnel;
     if (meta.leadRef) hashFields.leadRef = String(meta.leadRef);
+    if (meta.visitorId) hashFields.visitorId = String(meta.visitorId);
     if (meta.visitorInfo) hashFields.visitorInfo = JSON.stringify(meta.visitorInfo);
     if (meta.actionCards && Array.isArray(meta.actionCards) && meta.actionCards.length > 0) {
       hashFields.latestActionCards = JSON.stringify(meta.actionCards);
@@ -73,19 +76,20 @@ export async function appendMessage(sessionId, message, meta = {}) {
     logger.warn(`Redis session buffer update failed for sessionId ${sessionId}:`, err?.message || err);
   }
 
-  // Asynchronously flush message to MongoDB without blocking chat response
-  syncMessageToMongoAsync(sessionId, formattedMsg, meta);
+  // Flush message to MongoDB
+  await syncMessageToMongo(sessionId, formattedMsg, meta);
 }
 
 /**
- * Retrieves the sliding window message history for a session from Redis
+ * Retrieves the message history for a session from Redis
  * (Falls back to MongoDB if Redis cache is cold)
+ * Returns messages sorted chronologically by timestamp.
  *
  * @param {string} sessionId - Unique session ID
- * @param {number} [limit=10] - Number of recent messages to return
+ * @param {number} [limit=100] - Number of recent messages to return
  * @returns {Promise<Array<Object>>} Array of message objects
  */
-export async function getSessionHistory(sessionId, limit = MAX_SLIDING_WINDOW) {
+export async function getSessionHistory(sessionId, limit = MAX_STORED_HISTORY) {
   if (!sessionId) return [];
 
   const msgKey = getSessionMessagesKey(sessionId);
@@ -93,7 +97,10 @@ export async function getSessionHistory(sessionId, limit = MAX_SLIDING_WINDOW) {
   try {
     const cachedMessages = await redis.lrange(msgKey, -limit, -1);
     if (cachedMessages && cachedMessages.length > 0) {
-      return cachedMessages.map((m) => JSON.parse(m));
+      const parsed = cachedMessages.map((m) => JSON.parse(m));
+      return parsed.sort(
+        (a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0)
+      );
     }
   } catch (err) {
     logger.warn(`Redis session history fetch failed for sessionId ${sessionId}:`, err?.message || err);
@@ -103,7 +110,10 @@ export async function getSessionHistory(sessionId, limit = MAX_SLIDING_WINDOW) {
   try {
     const conversation = await SalesConversation.findOne({ sessionId }).lean();
     if (conversation && Array.isArray(conversation.messages) && conversation.messages.length > 0) {
-      const recent = conversation.messages.slice(-limit);
+      const sorted = [...conversation.messages].sort(
+        (a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0)
+      );
+      const recent = limit && limit < sorted.length ? sorted.slice(-limit) : sorted;
 
       // Repopulate Redis in background
       try {
@@ -111,7 +121,7 @@ export async function getSessionHistory(sessionId, limit = MAX_SLIDING_WINDOW) {
         for (const msg of recent) {
           pipeline.rpush(msgKey, JSON.stringify(msg));
         }
-        pipeline.ltrim(msgKey, -MAX_SLIDING_WINDOW, -1);
+        pipeline.ltrim(msgKey, -MAX_STORED_HISTORY, -1);
         pipeline.expire(msgKey, SESSION_TTL_SECONDS);
         await pipeline.exec();
       } catch (repErr) {
@@ -171,6 +181,7 @@ export async function getSessionMeta(sessionId) {
     missingFields: funnelState.missingFields || [],
     collectedData: funnelState.collectedData || {},
     leadRef: rawMeta.leadRef || null,
+    visitorId: rawMeta.visitorId || null,
     visitorInfo: rawMeta.visitorInfo || {},
     actionCards: rawMeta.latestActionCards || [],
     lastActive: rawMeta.lastActive || new Date().toISOString(),
@@ -178,36 +189,61 @@ export async function getSessionMeta(sessionId) {
 }
 
 /**
- * Asynchronously persists conversation message to MongoDB in the background
+ * Persists conversation message to MongoDB
  */
-function syncMessageToMongoAsync(sessionId, formattedMsg, meta) {
-  setImmediate(async () => {
-    try {
-      const updateDoc = {
-        $push: { messages: formattedMsg },
-      };
+export async function syncMessageToMongo(sessionId, formattedMsg, meta = {}) {
+  try {
+    let effectiveVisitorId = meta?.visitorId || null;
+    let effectiveUserId = meta?.userId || null;
+    let effectiveFunnel = meta?.currentFunnel || null;
 
-      const setFields = {};
-      if (meta?.currentFunnel) setFields.currentFunnel = meta.currentFunnel;
-      if (meta?.leadRef) setFields.leadRef = meta.leadRef;
-      if (Object.keys(setFields).length > 0) {
-        updateDoc.$set = setFields;
+    if (!effectiveVisitorId) {
+      try {
+        const rMeta = await redis.hgetall(getSessionMetaKey(sessionId));
+        effectiveVisitorId = rMeta?.visitorId || null;
+        if (!effectiveFunnel) effectiveFunnel = rMeta?.currentFunnel || null;
+      } catch {
+        // non-blocking
       }
-
-      const setOnInsert = {
-        sessionId,
-        visitorInfo: meta?.visitorInfo || {},
-      };
-      updateDoc.$setOnInsert = setOnInsert;
-
-      await SalesConversation.findOneAndUpdate({ sessionId }, updateDoc, {
-        upsert: true,
-        new: true,
-      });
-    } catch (dbError) {
-      logger.error(`Failed to asynchronously persist message to MongoDB for sessionId ${sessionId}:`, dbError);
     }
-  });
+
+    const updateDoc = {
+      $push: { messages: formattedMsg },
+    };
+
+    const setFields = {
+      updatedAt: new Date(),
+    };
+    if (effectiveFunnel) setFields.currentFunnel = effectiveFunnel;
+    if (meta?.leadRef) setFields.leadRef = meta.leadRef;
+    if (effectiveUserId) setFields.userId = effectiveUserId;
+    if (effectiveVisitorId) setFields.visitorId = effectiveVisitorId;
+    if (meta?.title) setFields.title = meta.title;
+    updateDoc.$set = setFields;
+
+    const setOnInsert = {
+      sessionId,
+      status: "active",
+      visitorInfo: meta?.visitorInfo || {},
+      createdAt: new Date(),
+    };
+    if (effectiveUserId) setOnInsert.userId = effectiveUserId;
+    if (effectiveVisitorId) setOnInsert.visitorId = effectiveVisitorId;
+    if (meta?.title) {
+      setOnInsert.title = meta.title;
+    } else if (formattedMsg.role === "user" && formattedMsg.content) {
+      const text = formattedMsg.content.trim();
+      setOnInsert.title = text.length <= 45 ? text : text.slice(0, 42) + "…";
+    }
+    updateDoc.$setOnInsert = setOnInsert;
+
+    await SalesConversation.findOneAndUpdate({ sessionId }, updateDoc, {
+      upsert: true,
+      new: true,
+    });
+  } catch (dbError) {
+    logger.error(`Failed to persist message to MongoDB for sessionId ${sessionId}:`, dbError);
+  }
 }
 
 export default {

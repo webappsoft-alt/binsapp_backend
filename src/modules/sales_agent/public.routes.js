@@ -1,9 +1,18 @@
 import { Router } from "express";
 import { getCheckoutSession } from "./tools/checkoutToken.js";
 import SalesLead from "../../models/SalesLead.js";
+import SalesConversation from "../../models/SalesConversation.js";
 import { evaluateLeadScore } from "./scoring/leadScoring.service.js";
 import { dispatchSalesAlert } from "./notifications/salesAlert.service.js";
 import { logger } from "../../config/logger.js";
+import { optionalAuthenticate } from "../../middlewares/auth.js";
+import {
+  getChatHistory,
+  getSessionTranscript,
+  updateSessionDetails,
+  deleteSession,
+  clearAllChatHistory,
+} from "./history/history.controller.js";
 
 const router = Router();
 
@@ -135,7 +144,7 @@ router.post("/lead-capture", async (req, res, next) => {
       },
       classification,
       qualificationScore: leadScore || score,
-      status: "active_chat",
+      status: "new",
       metadata: {
         sessionId: sessionId || `web_offline_${Date.now()}`,
         source: sourcePage || "offline_lead_form",
@@ -146,6 +155,19 @@ router.post("/lead-capture", async (req, res, next) => {
         collectedData,
       },
     });
+
+    if (sessionId) {
+      try {
+        const conv = await SalesConversation.findOne({ sessionId });
+        if (conv) {
+          lead.conversationRef = conv._id;
+          await lead.save();
+          await SalesConversation.updateOne({ _id: conv._id }, { $set: { leadRef: lead._id } });
+        }
+      } catch (linkErr) {
+        logger.warn("Failed linking lead to conversation:", linkErr?.message);
+      }
+    }
 
     // Dispatch instant notifications (Socket + Email)
     dispatchSalesAlert(lead, "NEW_LEAD").catch((err) =>
@@ -232,5 +254,59 @@ router.post("/analytics/track", async (req, res, next) => {
     next(error);
   }
 });
+
+/* ==========================================================================
+   Chat History & Cross-Device Account Sync APIs (Web & Mobile)
+   ========================================================================== */
+
+/**
+ * @swagger
+ * /api/sales-agent/history:
+ *   get:
+ *     summary: Retrieve saved conversations list for current user / session
+ *     tags: [Sales Agent Public]
+ */
+router.get("/history", optionalAuthenticate, getChatHistory);
+router.get("/conversations", optionalAuthenticate, getChatHistory);
+
+/**
+ * @swagger
+ * /api/sales-agent/history/{sessionId}:
+ *   get:
+ *     summary: Retrieve full transcript and details for a specific conversation session
+ *     tags: [Sales Agent Public]
+ */
+router.get("/history/:sessionId", optionalAuthenticate, getSessionTranscript);
+router.get("/conversations/:sessionId", optionalAuthenticate, getSessionTranscript);
+
+/**
+ * @swagger
+ * /api/sales-agent/history/{sessionId}:
+ *   put:
+ *     summary: Update conversation title or user link
+ *     tags: [Sales Agent Public]
+ */
+router.put("/history/:sessionId", optionalAuthenticate, updateSessionDetails);
+router.put("/conversations/:sessionId", optionalAuthenticate, updateSessionDetails);
+
+/**
+ * @swagger
+ * /api/sales-agent/history/{sessionId}:
+ *   delete:
+ *     summary: Delete a single conversation session
+ *     tags: [Sales Agent Public]
+ */
+router.delete("/history/:sessionId", optionalAuthenticate, deleteSession);
+router.delete("/conversations/:sessionId", optionalAuthenticate, deleteSession);
+
+/**
+ * @swagger
+ * /api/sales-agent/history:
+ *   delete:
+ *     summary: Clear all conversation history for the current user / session
+ *     tags: [Sales Agent Public]
+ */
+router.delete("/history", optionalAuthenticate, clearAllChatHistory);
+router.delete("/conversations", optionalAuthenticate, clearAllChatHistory);
 
 export default router;

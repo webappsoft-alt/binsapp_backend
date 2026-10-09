@@ -941,6 +941,49 @@ class OrderService {
       throw error;
     }
   }
+
+  async getSingleOrder(orderId, userId, role = PRICING_ROLES.CUSTOMER) {
+    if (!orderId) throw new BadRequestError("Order ID is required");
+
+    const order = await Order.findById(orderId)
+      .populate([
+        "user",
+        "dumbster",
+        "portaPotty",
+        "to_id",
+        {
+          path: "assignOrder",
+          populate: {
+            path: "subUserDetail",
+          },
+        },
+      ])
+      .lean();
+
+    if (!order) {
+      throw new NotFoundError("Order not found");
+    }
+
+    const requester = userId ? userId.toString() : null;
+    const isCustomer =
+      order.user?._id?.toString() === requester ||
+      order.user?.toString() === requester;
+    const isOwner =
+      order.to_id?._id?.toString() === requester ||
+      order.to_id?.toString() === requester;
+    const isDriver =
+      order.assignOrder?.subUserDetail?._id?.toString() === requester;
+
+    if (requester && !isCustomer && !isOwner && !isDriver) {
+      const userDoc = await User.findById(userId).select("type role").lean();
+      const isAdmin = userDoc?.type === "admin" || userDoc?.role === "admin";
+      if (!isAdmin) {
+        throw new ForbiddenError("You are not authorized to view this order");
+      }
+    }
+
+    return formatOrderPayload(order, role);
+  }
   async deleteAdminOrder(Id) {
     try {
       const deletedSession = await Order.findByIdAndDelete({
