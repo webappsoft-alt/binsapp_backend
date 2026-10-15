@@ -312,6 +312,28 @@ const orderSchema = new mongoose.Schema(
         type: Date,
         default: null,
       },
+      requestedBy: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+        default: null,
+      },
+      requestedByName: {
+        type: String,
+        default: "",
+      },
+      requestedByRole: {
+        type: String,
+        default: "Superintendent",
+      },
+      requestType: {
+        type: String,
+        enum: ["routine", "early_pickup", "final_pickup", "swap"],
+        default: "routine",
+      },
+      requestNotes: {
+        type: String,
+        default: "",
+      },
       assignedAt: {
         type: Date,
         default: null,
@@ -565,5 +587,7 @@ const orderSchema = new mongoose.Schema(
 );
 
 orderSchema.index({ location: "2dsphere" });
+orderSchema.index({ to_id: 1, createdAt: -1 });
+orderSchema.index({ to_id: 1, status: 1 });
 
 export default mongoose.model("Order", orderSchema);

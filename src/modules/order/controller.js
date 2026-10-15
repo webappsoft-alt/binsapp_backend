@@ -538,3 +538,117 @@ export const updateAdminManualReviewRequest = async (req, res, next) => {
     next(error);
   }
 };
+
+export const getRenterCalendarOrders = async (req, res, next) => {
+  try {
+    const userId = req.user._id;
+    const { startDate, endDate, service_type, status, driverId } = req.query;
+
+    const calendarData = await orderService.getRenterCalendarOrders({
+      userId,
+      startDate,
+      endDate,
+      service_type,
+      status,
+      driverId,
+    });
+
+    res.status(200).json({
+      success: true,
+      message: "Calendar orders fetched successfully",
+      data: calendarData,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getRenterReportsAnalytics = async (req, res, next) => {
+  try {
+    const userId = req.user._id;
+    const { timeRange, startDate, endDate } = req.query;
+
+    const analyticsData = await orderService.getRenterReportsAnalytics({
+      userId,
+      timeRange,
+      startDate,
+      endDate,
+    });
+
+    res.status(200).json({
+      success: true,
+      message: "Reports analytics fetched successfully",
+      data: analyticsData,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getRenterCustomersDirectory = async (req, res, next) => {
+  try {
+    const userId = req.user._id;
+    const { search, tab, limit, page } = req.query;
+
+    const data = await orderService.getRenterCustomersDirectory({
+      userId,
+      search,
+      tab,
+      limit,
+      page,
+    });
+
+    res.status(200).json({
+      success: true,
+      message: "Customer directory fetched successfully",
+      data,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getRenterCustomerDetail = async (req, res, next) => {
+  try {
+    const userId = req.user._id;
+    const { customerId } = req.params;
+
+    const data = await orderService.getRenterCustomerDetail({
+      userId,
+      customerId,
+    });
+
+    res.status(200).json({
+      success: true,
+      message: "Customer details fetched successfully",
+      data,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const markReadyToPickup = async (req, res, next) => {
+  try {
+    const { orderId, requestType, requestedByName, requestedByRole, notes } = req.body;
+    const result = await orderService.markOrderReadyToPickup({
+      orderId: orderId || req.params.id,
+      userId: req.user._id,
+      user: req.user,
+      requestType,
+      requestedByName,
+      requestedByRole,
+      notes,
+    });
+    res.status(200).json({
+      success: true,
+      message: "Order marked ready for pickup successfully",
+      data: result,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+
+

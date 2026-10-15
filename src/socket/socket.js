@@ -4841,6 +4841,16 @@ export const initSocket = (server) => {
           return;
         }
         order.readyToPickup = true;
+        if (!order.pickupWorkflow) {
+          order.pickupWorkflow = {};
+        }
+        order.pickupWorkflow.status = "ready";
+        order.pickupWorkflow.requestedAt = new Date();
+        order.pickupWorkflow.requestedBy = data.userId || socket.userId || (order.user?._id || order.user);
+        order.pickupWorkflow.requestedByName = data.requestedByName || order.user?.name || "Superintendent";
+        order.pickupWorkflow.requestedByRole = data.requestedByRole || "Superintendent";
+        order.pickupWorkflow.requestType = data.requestType || (data.isEarly ? "early_pickup" : "final_pickup");
+        order.pickupWorkflow.requestNotes = data.notes || "";
         await order.save();
 
         const pickupCopy = orderMessages.readyForPickup({

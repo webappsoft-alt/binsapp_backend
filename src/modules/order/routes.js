@@ -23,6 +23,11 @@ import {
   updateSwapStatusRenter,
   getAdminManualReviewRequest,
   updateAdminManualReviewRequest,
+  getRenterCalendarOrders,
+  getRenterReportsAnalytics,
+  getRenterCustomersDirectory,
+  getRenterCustomerDetail,
+  markReadyToPickup,
 } from "./controller.js";
 import { authenticate, admin } from "../../middlewares/auth.js";
 import { validate } from "../../middlewares/validate.js";
@@ -195,6 +200,50 @@ router.use(authenticate);
  *         description: Internal server error
  */
 router.get("/renter", fetchRenterOrder);
+
+/**
+ * @swagger
+ * /api/order/renter/calendar:
+ *   get:
+ *     summary: Get calendar orders for provider
+ *     description: Retrieve scheduled and active orders for provider with duration from start_date to end_date.
+ *     tags: [Renter Order]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: startDate
+ *         schema:
+ *           type: string
+ *         description: Start date filter
+ *       - in: query
+ *         name: endDate
+ *         schema:
+ *           type: string
+ *         description: End date filter
+ *       - in: query
+ *         name: service_type
+ *         schema:
+ *           type: string
+ *         description: Service type filter
+ *       - in: query
+ *         name: status
+ *         schema:
+ *           type: string
+ *         description: Order status filter
+ *       - in: query
+ *         name: driverId
+ *         schema:
+ *           type: string
+ *         description: Driver ID filter
+ *     responses:
+ *       200:
+ *         description: Calendar orders fetched successfully
+ */
+router.get("/renter/calendar", getRenterCalendarOrders);
+router.get("/renter/reports-analytics", getRenterReportsAnalytics);
+router.get("/renter/customers-directory", getRenterCustomersDirectory);
+router.get("/renter/customers-directory/:customerId", getRenterCustomerDetail);
 
 /**
  * @swagger
@@ -1221,4 +1270,40 @@ router.delete("/admin/delete/:id", admin, adminDeleteOrder);
  *         description: Internal server error
  */
 router.get("/admin/timeline/:id", admin, getOrderTimeline);
+
+/**
+ * @swagger
+ * /api/order/ready-to-pickup:
+ *   post:
+ *     summary: Mark order ready for pickup (Customer / Commercial Portal)
+ *     description: Sets the order as ready for pickup, updates pickupWorkflow with requester info, and notifies provider.
+ *     tags: [Rentee Order]
+ *     security:
+ *       - BearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - orderId
+ *             properties:
+ *               orderId:
+ *                 type: string
+ *               requestType:
+ *                 type: string
+ *                 enum: [routine, early_pickup, final_pickup, swap]
+ *               requestedByName:
+ *                 type: string
+ *               requestedByRole:
+ *                 type: string
+ *               notes:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Order marked ready for pickup successfully
+ */
+router.post("/ready-to-pickup", authenticate, markReadyToPickup);
+
 export default router;

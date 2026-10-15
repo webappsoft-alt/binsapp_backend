@@ -359,6 +359,10 @@ class BinService {
       });
 
       const user = await User.findById(userId);
+      if (user && binData.insurancefile && !user.insuranceFile) {
+        user.insuranceFile = String(binData.insurancefile);
+        user.isInsured = true;
+      }
       if (binData.portaPotty) {
         user.PortaPottypendingCount = user.PortaPottypendingCount + 1;
       } else {

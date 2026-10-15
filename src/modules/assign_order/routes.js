@@ -1,6 +1,8 @@
 import express from "express";
 import {
   addOperatorDriver,
+  deleteOperatorDriver,
+  sendDriverInvite,
   assignDriverToOrder,
   changeDriver,
   completeDelivery,
@@ -156,6 +158,8 @@ router.post(
 // ==========================================
 router.get("/operator/drivers", authenticate, getOperatorDrivers);
 router.post("/operator/drivers", authenticate, addOperatorDriver);
+router.delete("/operator/drivers/:id", authenticate, deleteOperatorDriver);
+router.post("/operator/send-driver-invite", authenticate, sendDriverInvite);
 router.post("/operator/assign-driver", authenticate, assignDriverToOrder);
 router.post("/operator/dispatch", authenticate, dispatchJob);
 router.post("/operator/change-driver", authenticate, changeDriver);

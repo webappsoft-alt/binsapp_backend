@@ -107,6 +107,13 @@ class AssignOrderService {
       const assignLink = `https://api.binsapp.ai/assign-driver?token=${assignOrder._id}`;
       const driverName = subUserDetail.name || "Driver";
 
+      if (subUser) {
+        subUser.lastInviteSentAt = new Date();
+        subUser.inviteSentCount = (subUser.inviteSentCount || 0) + 1;
+        subUser.lastInviteLink = assignLink;
+        await subUser.save();
+      }
+
       Promise.all([
         this.sendMessage(
           `You've been assigned a new order. Tap the link below to view the details and start your route: ${assignLink}`,
@@ -154,6 +161,36 @@ class AssignOrderService {
       if (!assignOrder) {
         throw new NotFoundError("Assign Order not found");
       }
+
+      // Track driver portal access & login status
+      try {
+        if (!assignOrder.linkOpened) {
+          assignOrder.linkOpened = true;
+          assignOrder.linkOpenedAt = new Date();
+          if (!assignOrder.timeline) assignOrder.timeline = [];
+          assignOrder.timeline.push({
+            event: "Driver accessed portal / session authenticated",
+            timestamp: new Date(),
+            notes: "Driver opened assignment link and logged into portal",
+          });
+          await assignOrder.save();
+        }
+        const subUserId =
+          assignOrder.subUserDetail?._id || assignOrder.subUserDetail;
+        if (subUserId) {
+          await SubUserDetail.findByIdAndUpdate(subUserId, {
+            $set: {
+              isLoggedIn: true,
+              lastLoginAt: new Date(),
+              lastActiveAt: new Date(),
+            },
+            $inc: { loginCount: 1 },
+          });
+        }
+      } catch (trackErr) {
+        logger.warn("Failed to update driver login tracking:", trackErr.message);
+      }
+
       const token = generateAccessToken({
         _id: assignOrder._id,
         subUserDetail: assignOrder.subUserDetail,
@@ -1012,10 +1049,153 @@ class AssignOrderService {
         activeJobs.map((j) => [j._id.toString(), j.count]),
       );
 
-      const formattedDrivers = drivers.map((d) => ({
-        ...d,
-        activeJobsCount: jobCountMap.get(d._id.toString()) || 0,
-      }));
+      // Attach dynamic completed jobs count from AssignOrder
+      const completedJobs = await AssignOrder.aggregate([
+        {
+          $match: {
+            assignBy: new mongoose.Types.ObjectId(operatorId),
+            status: { $in: ["delivered", "completed"] },
+          },
+        },
+        { $group: { _id: "$subUserDetail", count: { $sum: 1 } } },
+      ]);
+      const completedCountMap = new Map(
+        completedJobs.map((j) => [j._id.toString(), j.count]),
+      );
+
+      // Attach total lifetime assigned jobs from AssignOrder
+      const totalJobs = await AssignOrder.aggregate([
+        {
+          $match: {
+            assignBy: new mongoose.Types.ObjectId(operatorId),
+          },
+        },
+        { $group: { _id: "$subUserDetail", count: { $sum: 1 } } },
+      ]);
+      const totalCountMap = new Map(
+        totalJobs.map((j) => [j._id.toString(), j.count]),
+      );
+
+      // Also query Order directly for direct driver assignments that were completed
+      const directCompletedDeliveries = await Order.aggregate([
+        {
+          $match: {
+            to_id: new mongoose.Types.ObjectId(operatorId),
+            $or: [
+              { "deliveryWorkflow.status": "delivered" },
+              { "pickupWorkflow.status": "picked_up" },
+              { status: "completed" },
+            ],
+          },
+        },
+        {
+          $group: {
+            _id: "$deliveryWorkflow.assignedDriver",
+            count: { $sum: 1 },
+          },
+        },
+      ]);
+      const directCompletedMap = new Map(
+        directCompletedDeliveries
+          .filter((d) => d._id)
+          .map((d) => [d._id.toString(), d.count]),
+      );
+
+      // Attach latest assignment & invite/login status per driver
+      const latestAssignments = await AssignOrder.aggregate([
+        {
+          $match: {
+            assignBy: new mongoose.Types.ObjectId(operatorId),
+          },
+        },
+        { $sort: { createdAt: -1 } },
+        {
+          $group: {
+            _id: "$subUserDetail",
+            latestId: { $first: "$_id" },
+            latestOrderId: { $first: "$orderId" },
+            latestStatus: { $first: "$status" },
+            latestCreatedAt: { $first: "$createdAt" },
+            latestRequestSentAt: { $first: "$requestSentAt" },
+            latestLinkOpened: { $first: "$linkOpened" },
+            latestLinkOpenedAt: { $first: "$linkOpenedAt" },
+          },
+        },
+      ]);
+      const latestAssignMap = new Map(
+        latestAssignments.map((a) => [a._id.toString(), a]),
+      );
+
+      let maxCompleted = 0;
+      const formattedDrivers = drivers.map((d) => {
+        const idStr = d._id.toString();
+        const fromAssign = completedCountMap.get(idStr) || 0;
+        const fromDirect = directCompletedMap.get(idStr) || 0;
+        const completedCount = Math.max(fromAssign, fromDirect);
+        const totalCount = Math.max(totalCountMap.get(idStr) || 0, completedCount);
+        if (completedCount > maxCompleted) {
+          maxCompleted = completedCount;
+        }
+
+        const latestAssign = latestAssignMap.get(idStr);
+
+        // Check request status (invite / assignment sent)
+        const isInviteSent = Boolean(d.lastInviteSentAt || latestAssign);
+        const lastInviteSentAt =
+          d.lastInviteSentAt ||
+          latestAssign?.latestRequestSentAt ||
+          latestAssign?.latestCreatedAt ||
+          null;
+
+        // Check login status (portal session opened, GPS active, or FCM token registered)
+        const hasGps = Boolean(
+          d.location?.coordinates &&
+            (d.location.coordinates[0] !== 0 || d.location.coordinates[1] !== 0),
+        );
+        const isLoggedIn = Boolean(
+          d.isLoggedIn ||
+            d.lastLoginAt ||
+            latestAssign?.latestLinkOpened ||
+            d.fcmtoken ||
+            hasGps,
+        );
+        const lastLoginAt =
+          d.lastLoginAt ||
+          latestAssign?.latestLinkOpenedAt ||
+          (hasGps ? d.updatedAt : null);
+
+        const latestAssignLink = latestAssign
+          ? `https://api.binsapp.ai/assign-driver?token=${latestAssign.latestId}`
+          : d.lastInviteLink || `https://api.binsapp.ai/assign-driver`;
+
+        return {
+          ...d,
+          activeJobsCount: jobCountMap.get(idStr) || 0,
+          completedJobsCount: completedCount,
+          totalJobsCount: totalCount,
+          isInviteSent,
+          lastInviteSentAt,
+          inviteSentCount: d.inviteSentCount || (isInviteSent ? 1 : 0),
+          isLoggedIn,
+          lastLoginAt,
+          loginCount: d.loginCount || (isLoggedIn ? 1 : 0),
+          latestAssignLink,
+          latestAssignId: latestAssign?.latestId || null,
+          latestAssignStatus: latestAssign?.latestStatus || null,
+          linkOpened: Boolean(latestAssign?.latestLinkOpened || d.isLoggedIn),
+        };
+      });
+
+      // Sort drivers by completedJobsCount desc
+      formattedDrivers.sort(
+        (a, b) => (b.completedJobsCount || 0) - (a.completedJobsCount || 0)
+      );
+
+      // Mark top performer and rank
+      formattedDrivers.forEach((d, index) => {
+        d.rank = index + 1;
+        d.isTopPerformer = maxCompleted > 0 && d.completedJobsCount === maxCompleted;
+      });
 
       return {
         operator: {
@@ -1029,6 +1209,24 @@ class AssignOrderService {
       };
     } catch (error) {
       logger.error("getOperatorDrivers error:", error);
+      throw error;
+    }
+  }
+
+  async deleteOperatorDriver(operatorId, driverId) {
+    try {
+      const driver = await SubUserDetail.findOne({
+        _id: driverId,
+        operator: operatorId,
+      });
+      if (!driver) {
+        throw new NotFoundError("Driver not found or unauthorized");
+      }
+      driver.status = "inactive";
+      await driver.save();
+      return { message: "Driver deactivated successfully", driverId };
+    } catch (error) {
+      logger.error("deleteOperatorDriver error:", error);
       throw error;
     }
   }
@@ -1075,6 +1273,79 @@ class AssignOrderService {
       return driver;
     } catch (error) {
       logger.error("addOperatorDriver error:", error);
+      throw error;
+    }
+  }
+
+  /**
+   * Send / Resend sign-in and job dispatch request to driver via SMS & email
+   */
+  async sendDriverInvite(operatorId, { driverId }) {
+    try {
+      if (!driverId) throw new BadRequestError("Driver ID is required");
+
+      const driver = await SubUserDetail.findById(driverId);
+      if (!driver) throw new NotFoundError("Driver not found");
+
+      // Check if driver has an existing assignment for this operator
+      const recentAssign = await AssignOrder.findOne({
+        assignBy: operatorId,
+        subUserDetail: driver._id,
+      }).sort({ createdAt: -1 });
+
+      const link = recentAssign
+        ? `https://api.binsapp.ai/assign-driver?token=${recentAssign._id}`
+        : `https://api.binsapp.ai/assign-driver`;
+
+      const driverName = driver.name || "Driver";
+      const smsMessage = `Hello ${driverName}, your fleet operator has sent you an access link to the BINS Driver Portal. View your route and assigned jobs here: ${link}`;
+
+      const notifications = [];
+      if (driver.phone) {
+        notifications.push(
+          this.sendMessage(smsMessage, driver.phone).catch((err) =>
+            logger.warn("Failed to send driver invite SMS:", err.message),
+          ),
+        );
+      }
+      if (driver.email) {
+        notifications.push(
+          sendEmail({
+            to: driver.email,
+            subject: "Fleet Driver Portal Access - BINS APP",
+            html: `
+              <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 14px; background: #ffffff;">
+                <h2 style="color: #0f172a; margin-top: 0; font-size: 18px;">Fleet Driver Portal Access</h2>
+                <p style="color: #475569; font-size: 14px; line-height: 1.5;">Hello <strong>${driverName}</strong>,</p>
+                <p style="color: #475569; font-size: 14px; line-height: 1.5;">Your fleet operator has invited you to access the <strong>BINS Driver Portal</strong>. Tap the button below to view your route assignments, directions, and job updates:</p>
+                <div style="margin: 24px 0;">
+                  <a href="${link}" style="background-color: #11ba41; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 10px; font-weight: bold; font-size: 14px; display: inline-block;">Access Driver Portal</a>
+                </div>
+                <p style="color: #94a3b8; font-size: 12px; margin-top: 24px;">Direct portal link: <a href="${link}" style="color: #11ba41;">${link}</a></p>
+              </div>
+            `,
+          }).catch((err) =>
+            logger.warn("Failed to send driver invite email:", err.message),
+          ),
+        );
+      }
+
+      await Promise.allSettled(notifications);
+
+      driver.lastInviteSentAt = new Date();
+      driver.inviteSentCount = (driver.inviteSentCount || 0) + 1;
+      driver.lastInviteLink = link;
+      await driver.save();
+
+      return {
+        message: `Sign-in request sent successfully to ${driver.phone}`,
+        driverId: driver._id,
+        phone: driver.phone,
+        link,
+        lastInviteSentAt: driver.lastInviteSentAt,
+      };
+    } catch (error) {
+      logger.error("sendDriverInvite error:", error);
       throw error;
     }
   }
@@ -1204,6 +1475,13 @@ class AssignOrderService {
 
       const assignLinkId = order.assignOrder || order._id;
       const assignLink = `https://api.binsapp.ai/assign-driver?token=${assignLinkId}`;
+
+      if (assignedDriverDoc) {
+        assignedDriverDoc.lastInviteSentAt = new Date();
+        assignedDriverDoc.inviteSentCount = (assignedDriverDoc.inviteSentCount || 0) + 1;
+        assignedDriverDoc.lastInviteLink = assignLink;
+        await assignedDriverDoc.save();
+      }
 
       const notifications = [];
 

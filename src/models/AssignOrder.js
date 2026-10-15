@@ -40,6 +40,34 @@ const SubUserDeatail = new Schema(
       type: String,
       default: "",
     },
+    lastInviteSentAt: {
+      type: Date,
+      default: null,
+    },
+    inviteSentCount: {
+      type: Number,
+      default: 0,
+    },
+    lastInviteLink: {
+      type: String,
+      default: "",
+    },
+    isLoggedIn: {
+      type: Boolean,
+      default: false,
+    },
+    lastLoginAt: {
+      type: Date,
+      default: null,
+    },
+    loginCount: {
+      type: Number,
+      default: 0,
+    },
+    lastActiveAt: {
+      type: Date,
+      default: null,
+    },
     location: {
       type: {
         type: String,
@@ -111,6 +139,18 @@ const AssignOrderSchema = new Schema(
         photos: { type: [String], default: [] },
       },
     ],
+    requestSentAt: {
+      type: Date,
+      default: Date.now,
+    },
+    linkOpened: {
+      type: Boolean,
+      default: false,
+    },
+    linkOpenedAt: {
+      type: Date,
+      default: null,
+    },
   },
   {
     timestamps: true,

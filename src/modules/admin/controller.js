@@ -105,6 +105,7 @@ export async function getAllUsers(req, res, next) {
       isStripeConnected,
       portaPotty,
       access_types = "all",
+      isInsured,
     } = req.query;
     let query = {};
     let conditions = [];
@@ -171,6 +172,24 @@ export async function getAllUsers(req, res, next) {
       });
     } else if (isStripeConnected == "false" && type == "rentee") {
       conditions.push({ cus_id: null });
+    }
+
+    if (isInsured === "true" || isInsured === true) {
+      conditions.push({
+        $or: [
+          { isInsured: true },
+          { insuranceFile: { $exists: true, $nin: [null, ""] } },
+        ],
+      });
+    } else if (isInsured === "false" || isInsured === false) {
+      conditions.push({
+        isInsured: { $ne: true },
+        $or: [
+          { insuranceFile: { $exists: false } },
+          { insuranceFile: null },
+          { insuranceFile: "" },
+        ],
+      });
     }
 
     if (search) {

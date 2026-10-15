@@ -270,8 +270,13 @@ export async function updateUser(userId, updates = {}) {
     delete updates.company;
   }
   // Top-level insurance upload (no junkRemoval profile required).
-  if (updates.insuranceFile != null && String(updates.insuranceFile).trim()) {
-    const fileUrl = String(updates.insuranceFile).trim();
+  const incomingInsurance =
+    updates.insuranceFile ||
+    updates.insurancefile ||
+    updates.insurance ||
+    updates.coi;
+  if (incomingInsurance != null && String(incomingInsurance).trim()) {
+    const fileUrl = String(incomingInsurance).trim();
     user.insuranceFile = fileUrl;
     user.isInsured = true;
     // Keep linked junk profile COI in sync when present.
@@ -285,6 +290,9 @@ export async function updateUser(userId, updates = {}) {
       }
     }
     delete updates.insuranceFile;
+    delete updates.insurancefile;
+    delete updates.insurance;
+    delete updates.coi;
     delete updates.isInsured;
   } else if (updates.isInsured === true || updates.isInsured === "true") {
     user.isInsured = true;
@@ -486,5 +494,5 @@ export async function updateLatLongs(userId, currentlat, currentlng) {
         });
       }
     }
-  } catch (error) {}
+  } catch (error) { }
 }

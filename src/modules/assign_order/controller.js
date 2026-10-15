@@ -211,6 +211,35 @@ export const addOperatorDriver = async (req, res, next) => {
   }
 };
 
+export const deleteOperatorDriver = async (req, res, next) => {
+  try {
+    const result = await service.deleteOperatorDriver(
+      req.user._id,
+      req.params.id
+    );
+    res.status(200).json({
+      success: true,
+      message: "Driver deactivated successfully",
+      data: result,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const sendDriverInvite = async (req, res, next) => {
+  try {
+    const result = await service.sendDriverInvite(req.user._id, req.body);
+    res.status(200).json({
+      success: true,
+      message: result?.message || "Sign-in request sent successfully",
+      data: result,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const assignDriverToOrder = async (req, res, next) => {
   try {
     const result = await service.assignDriverToOrder(req.user._id, req.body);
