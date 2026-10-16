@@ -11,6 +11,62 @@ import {
 } from "../../utils/apiError.js";
 import { sendNotification } from "../../utils/notifications.js";
 import adminService from "../admin/service.js";
+
+function normalizeJobSiteImages(data) {
+  if (!data || typeof data !== "object") return data;
+  const list = [];
+  const push = (val) => {
+    if (!val) return;
+    if (typeof val === "string") {
+      const trimmed = val.trim();
+      if (!trimmed) return;
+      if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+        try {
+          const parsed = JSON.parse(trimmed);
+          if (Array.isArray(parsed)) {
+            parsed.forEach(push);
+            return;
+          }
+        } catch (_) {}
+      }
+      if (trimmed.includes(",")) {
+        trimmed.split(",").forEach((item) => push(item.trim()));
+        return;
+      }
+      list.push(trimmed);
+      return;
+    }
+    if (Array.isArray(val)) {
+      val.forEach(push);
+      return;
+    }
+    if (typeof val === "object") {
+      push(val.url || val.image || val.src || val.placementPhotoUrl);
+    }
+  };
+
+  push(data.placementPhotos);
+  push(data.placement_photos);
+  push(data.images);
+  push(data.placement_photo);
+  push(data.placementPhotoUrl);
+  push(data.placementPhoto);
+  push(data.dropoff_image);
+  push(data.image);
+
+  const uniquePhotos = [...new Set(list)];
+  const primary = uniquePhotos[0] || "";
+
+  return {
+    ...data,
+    placementPhotos: uniquePhotos,
+    images: uniquePhotos,
+    placementPhotoUrl: data.placementPhotoUrl || primary,
+    dropoff_image: data.dropoff_image || primary,
+    image: data.image || primary,
+  };
+}
+
 class CompanyService {
   constructor() {
     this.logger = logger;
@@ -269,6 +325,7 @@ class CompanyService {
       throw error;
     }
   }
+
   async createJobSite(userId, companyId, jobSiteData) {
     try {
       const company = await this.Company.findOne({
@@ -279,8 +336,9 @@ class CompanyService {
       if (!company) {
         throw new this.NotFoundError("Invalid Company");
       }
+      const normalizedData = normalizeJobSiteImages(jobSiteData);
       const jobSite = await this.JobSite.create({
-        ...jobSiteData,
+        ...normalizedData,
         company: companyId,
         user: userId,
       });
@@ -292,9 +350,10 @@ class CompanyService {
   }
   async updateJobSite(jobSiteId, jobSiteData) {
     try {
+      const normalizedData = normalizeJobSiteImages(jobSiteData);
       const jobSite = await this.JobSite.findByIdAndUpdate(
         jobSiteId,
-        jobSiteData,
+        normalizedData,
         {
           new: true,
           runValidators: true,
@@ -317,8 +376,19 @@ class CompanyService {
         .skip((page - 1) * limit)
         .limit(limit);
       const total = await this.JobSite.countDocuments(query);
+      const formattedSites = jobSites.map((doc) => {
+        const obj = doc.toObject ? doc.toObject() : { ...doc };
+        if (!obj.placementPhotos || !obj.placementPhotos.length) {
+          const fallback = obj.placementPhotoUrl || obj.dropoff_image || obj.image;
+          obj.placementPhotos = fallback ? [fallback] : [];
+        }
+        if (!obj.images || !obj.images.length) {
+          obj.images = obj.placementPhotos;
+        }
+        return obj;
+      });
       return {
-        data: jobSites,
+        data: formattedSites,
         pagination: {
           page,
           limit,

@@ -95,6 +95,30 @@ export const createJobSiteValidation = Joi.object({
   instructions: Joi.string().allow("", null).optional(),
   placementInstructions: Joi.string().allow("", null).optional(),
   placementPhotoUrl: Joi.string().allow("", null).optional(),
+  placementPhotos: Joi.alternatives()
+    .try(
+      Joi.array().items(Joi.string().allow("", null)),
+      Joi.string().allow("", null),
+    )
+    .optional(),
+  images: Joi.alternatives()
+    .try(
+      Joi.array().items(Joi.string().allow("", null)),
+      Joi.string().allow("", null),
+    )
+    .optional(),
+  placement_photo: Joi.alternatives()
+    .try(
+      Joi.array().items(Joi.string().allow("", null)),
+      Joi.string().allow("", null),
+    )
+    .optional(),
+  placement_photos: Joi.alternatives()
+    .try(
+      Joi.array().items(Joi.string().allow("", null)),
+      Joi.string().allow("", null),
+    )
+    .optional(),
   placementGeo: Joi.object({
     type: Joi.string().valid("Point").required(),
     coordinates: Joi.array().items(Joi.number()).length(2).required(),

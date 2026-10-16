@@ -146,7 +146,7 @@ class PaymentService {
       throw error;
     }
   }
-  async createAccount(userid) {
+  async createAccount(userid, { returnUrl } = {}) {
     try {
       const user = await User.findById(userid);
       if (!user) {
@@ -166,15 +166,16 @@ class PaymentService {
       const payload = { _id: user._id, email: user.email };
 
       const accessToken = generateAccessToken(payload);
+
+      const baseReturnUrl = returnUrl || config.get("redirectUrl");
+      const separator = baseReturnUrl.includes("?") ? "&" : "?";
+      const finalReturnUrl = `${baseReturnUrl}${separator}account_id=${account_id}&token=${accessToken}`;
+      const finalRefreshUrl = baseReturnUrl;
+
       const accountLink = await stripe.accountLinks.create({
         account: account_id,
-        refresh_url: config.get("redirectUrl"),
-        return_url:
-          config.get("redirectUrl") +
-          "?account_id=" +
-          account_id +
-          "&token=" +
-          accessToken,
+        refresh_url: finalRefreshUrl,
+        return_url: finalReturnUrl,
         type: "account_onboarding",
       });
       return accountLink;

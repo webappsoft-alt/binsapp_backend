@@ -38,6 +38,7 @@ import {
 } from "../../utils/growthEngine.js";
 import mongoose from "mongoose";
 import Rating from "../../models/Rating.js";
+import JobSites from "../../models/JobSites.js";
 import { AssignOrder, SubUserDetail } from "../../models/AssignOrder.js";
 
 class OrderService {
@@ -52,7 +53,26 @@ class OrderService {
         "user",
         "dumbster",
         "portaPotty",
+        "treeRemoval",
+        "junkRemoval",
+        "company",
+        "jobSite",
         "to_id",
+        {
+          path: "userIds",
+          select:
+            "name comp_name email phone profilePicture rating total_reviews location address",
+        },
+        {
+          path: "rejected_by",
+          select:
+            "name comp_name email phone profilePicture rating total_reviews",
+        },
+        {
+          path: "accepted_by",
+          select:
+            "name comp_name email phone profilePicture rating total_reviews",
+        },
         {
           path: "assignOrder",
           populate: {
@@ -214,13 +234,26 @@ class OrderService {
           "dumbster",
           "dustbin",
           "to_id",
-          "userIds",
-          "rejected_by",
-          "accepted_by",
+          {
+            path: "userIds",
+            select:
+              "name comp_name email phone profilePicture rating total_reviews location address",
+          },
+          {
+            path: "rejected_by",
+            select:
+              "name comp_name email phone profilePicture rating total_reviews",
+          },
+          {
+            path: "accepted_by",
+            select:
+              "name comp_name email phone profilePicture rating total_reviews",
+          },
           "portaPotty",
           "treeRemoval",
           "junkRemoval",
           "company",
+          "jobSite",
           {
             path: "assignOrder",
             populate: {
@@ -953,7 +986,26 @@ class OrderService {
         "user",
         "dumbster",
         "portaPotty",
+        "treeRemoval",
+        "junkRemoval",
+        "company",
+        "jobSite",
         "to_id",
+        {
+          path: "userIds",
+          select:
+            "name comp_name email phone profilePicture rating total_reviews location address",
+        },
+        {
+          path: "rejected_by",
+          select:
+            "name comp_name email phone profilePicture rating total_reviews",
+        },
+        {
+          path: "accepted_by",
+          select:
+            "name comp_name email phone profilePicture rating total_reviews",
+        },
         {
           path: "assignOrder",
           populate: {

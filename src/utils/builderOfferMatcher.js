@@ -1,6 +1,7 @@
 import mongoose from "mongoose";
 import Dumbster from "../models/Dumbster.js";
 import OperatorGrowthProfile from "../models/OperatorGrowthProfile.js";
+import Company from "../models/Company.js";
 import {
   findNearbyDustbinProviders,
   resolveCompanyTopTier,
@@ -266,6 +267,42 @@ export function scoreProviderPriority({
  */
 export async function matchBuilderOfferPortions(offer, { onlineOnly = true } = {}) {
   const companyId = offer.company?._id || offer.company;
+  let companyDoc = null;
+  if (
+    offer.company &&
+    typeof offer.company === "object" &&
+    (offer.company.companyName || offer.company.legalBusinessName)
+  ) {
+    companyDoc = offer.company;
+  } else if (companyId) {
+    try {
+      companyDoc = await Company.findById(companyId)
+        .select(
+          "companyName legalBusinessName email phone logo address city state zip primaryContact",
+        )
+        .lean();
+    } catch {
+      companyDoc = null;
+    }
+  }
+  const companyInfo = companyDoc
+    ? {
+        _id: String(companyDoc._id || companyId),
+        companyName:
+          companyDoc.companyName || companyDoc.legalBusinessName || "",
+        legalBusinessName:
+          companyDoc.legalBusinessName || companyDoc.companyName || "",
+        email: companyDoc.email || "",
+        phone: companyDoc.phone || "",
+        logo: companyDoc.logo || "",
+        address: companyDoc.address || "",
+        city: companyDoc.city || "",
+        state: companyDoc.state || "",
+        zip: companyDoc.zip || "",
+        primaryContact: companyDoc.primaryContact || null,
+      }
+    : null;
+
   const serviceType = offer.serviceType || "dumpster";
   const tierMeta = await resolveCompanyTopTier(companyId);
   const openBinLines = (offer.lines || []).filter(
@@ -447,6 +484,9 @@ export async function matchBuilderOfferPortions(offer, { onlineOnly = true } = {
     portions.push({
       kind: "builder_offer",
       offerId: offer._id.toString(),
+      company: companyInfo,
+      companyName:
+        companyInfo?.companyName || companyInfo?.legalBusinessName || "",
       title: offer.title,
       regionLabel: offer.regionLabel,
       serviceType: offer.serviceType || "dumpster",

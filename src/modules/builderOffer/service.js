@@ -2578,6 +2578,10 @@ export async function listProviderPortions(providerId) {
     binsRemaining: { $gt: 0 },
     notifiedProviderIds: providerId,
   })
+    .populate(
+      "company",
+      "companyName legalBusinessName email phone logo address city state zip primaryContact",
+    )
     .sort({ updatedAt: -1 })
     .limit(50);
 

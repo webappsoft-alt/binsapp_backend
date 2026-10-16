@@ -19,7 +19,13 @@ export const createPaymentController = async (req, res, next) => {
 export const createAccountController = async (req, res, next) => {
   try {
     const user = req.user._id;
-    const account = await paymentController.createAccount(user);
+    const returnUrl =
+      req.query?.returnUrl ||
+      req.query?.return_url ||
+      req.query?.redirectUrl ||
+      req.body?.returnUrl ||
+      req.body?.return_url;
+    const account = await paymentController.createAccount(user, { returnUrl });
     res.status(201).json({
       success: true,
       message: "Account created successfully",
@@ -52,44 +58,62 @@ export const redirectCallbackController = async (req, res, next) => {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Loading...</title>
+    <title>Connecting Stripe...</title>
     <style>
         body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             display: flex;
-            justify-content: center;
+            flex-direction: column;
             align-items: center;
+            justify-content: center;
             height: 100vh;
             margin: 0;
-            background-color: #f0f0f0;
-            font-family: Arial, sans-serif;
+            background-color: #f8fafc;
+            color: #0f172a;
         }
-
-        .loader {
-            border: 8px solid #f3f3f3; /* Light grey */
-            border-top: 8px solid #3498db; /* Blue */
+        .spinner {
+            width: 44px;
+            height: 44px;
+            border: 4px solid #e2e8f0;
+            border-top-color: #11ba41;
             border-radius: 50%;
-            width: 60px;
-            height: 60px;
-            animation: spin 1s linear infinite;
+            animation: spin 0.8s linear infinite;
+            margin-bottom: 16px;
         }
-
         @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-
-        .loading-text {
-            margin-top: 20px;
-            font-size: 1.2em;
-            color: #555;
+            to { transform: rotate(360deg); }
         }
     </style>
 </head>
 <body>
-
-    <div class="loader"></div>
-    <div class="loading-text">Loading, please wait...</div>
-
+    <div class="spinner"></div>
+    <div style="font-size: 15px; font-weight: 600;">Stripe Connected! Closing window...</div>
+    <script>
+        (function() {
+            var params = new URLSearchParams(window.location.search);
+            var accountId = params.get('account_id') || params.get('accountId');
+            if (!accountId) {
+                var m = window.location.href.match(/acct_[A-Za-z0-9]+/);
+                if (m) accountId = m[0];
+            }
+            var msg = {
+                type: 'binsapp_stripe_connect_complete',
+                accountId: accountId || ''
+            };
+            if (window.opener && !window.opener.closed) {
+                try {
+                    window.opener.postMessage(msg, '*');
+                } catch(e) {}
+                setTimeout(function() {
+                    window.close();
+                }, 200);
+            } else {
+                setTimeout(function() {
+                    window.location.href = '/renter/wallet';
+                }, 800);
+            }
+        })();
+    </script>
 </body>
 </html>
 `);

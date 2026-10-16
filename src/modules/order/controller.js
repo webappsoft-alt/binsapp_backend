@@ -1,6 +1,7 @@
 import OrderService from "./service.js";
 import User from "../../models/User.js";
 import Tier from "../../models/Tier.js";
+import JobSites from "../../models/JobSites.js";
 import { PRICING_ROLES } from "../../utils/orderPricing.js";
 const orderService = new OrderService();
 
@@ -98,7 +99,7 @@ export const renterStats = async (req, res, next) => {
 export const renteeOrder = async (req, res, next) => {
   try {
     const userId = req.user._id;
-    const { page, limit, status = "all", otherId, service_type } = req.query;
+    const { page, limit, status = "all", otherId, service_type, search, jobSite } = req.query;
     // const id = req.params.id;
     let query = {};
     if (status === "all") {
@@ -122,11 +123,44 @@ export const renteeOrder = async (req, res, next) => {
       query.service_type = service_type;
     }
 
-    // if (status == "all") {
-    //   query.status = {$in:["accepted",'completed']};
-    // }else{
-    //   query.status = status;
-    // }
+    if (jobSite && typeof jobSite === "string" && jobSite !== "all") {
+      query.jobSite = jobSite;
+    }
+
+    if (search && typeof search === "string" && search.trim()) {
+      const safeSearch = search.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const searchRegex = { $regex: safeSearch, $options: "i" };
+
+      // Also search associated JobSites matching siteName or address
+      const matchingSites = await JobSites.find({
+        $or: [
+          { siteName: searchRegex },
+          { address: searchRegex },
+          { poNumber: searchRegex },
+        ],
+      }).select("_id");
+      const matchingSiteIds = (matchingSites || []).map((s) => s._id);
+
+      const orConditions = [
+        { address: searchRegex },
+        { "metadata.poNumber": searchRegex },
+        { poNumber: searchRegex },
+        { orderNumber: searchRegex },
+        { unitNumber: searchRegex },
+        { "deliveryWorkflow.unitNumber": searchRegex },
+        { materialInformation: searchRegex },
+        { category: searchRegex },
+        { notes: searchRegex },
+        { instructions: searchRegex },
+      ];
+
+      if (matchingSiteIds.length > 0) {
+        orConditions.push({ jobSite: { $in: matchingSiteIds } });
+      }
+
+      query.$or = orConditions;
+    }
+
     const orders = await orderService.renteeOrder(
       query,
       parseInt(page),
@@ -226,7 +260,11 @@ export const fetchrequestOrderRentee = async (req, res, next) => {
     } else {
       query.status = "pending";
     }
-    query.user = userId;
+    if (req.user?.company) {
+      query.$or = [{ user: userId }, { company: req.user.company }];
+    } else {
+      query.user = userId;
+    }
     const orders = await orderService.fetchrequestOrder(
       query,
       parseInt(page),

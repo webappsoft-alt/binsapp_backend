@@ -1,5 +1,6 @@
 import companyService from "./service.js";
 import * as commercialService from "./commercialService.js";
+import Company from "../../models/Company.js";
 
 export const createCompany = async (req, res, next) => {
   try {
@@ -112,9 +113,14 @@ export const adminUpdateCompanyStatus = async (req, res, next) => {
 
 export const createJobSite = async (req, res, next) => {
   try {
+    let companyId = req.user.company;
+    if (!companyId) {
+      const comp = await Company.findOne({ user: req.user._id });
+      if (comp) companyId = comp._id;
+    }
     const jobSite = await companyService.createJobSite(
       req.user._id,
-      req.user.company,
+      companyId,
       req.body,
     );
     res.status(201).json({
@@ -130,7 +136,16 @@ export const createJobSite = async (req, res, next) => {
 export const getJobSites = async (req, res, next) => {
   try {
     const { page = 1, limit = 10, search, city } = req.query;
-    const query = { company: req.user.company };
+    let companyId = req.user.company;
+    if (!companyId) {
+      const comp = await Company.findOne({ user: req.user._id });
+      if (comp) companyId = comp._id;
+    }
+    const orConditions = [{ user: req.user._id }];
+    if (companyId) {
+      orConditions.push({ company: companyId });
+    }
+    const query = orConditions.length > 1 ? { $or: orConditions } : orConditions[0];
     if (search) {
       const safeSearch = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       query.siteName = { $regex: safeSearch, $options: "i" };
@@ -139,8 +154,8 @@ export const getJobSites = async (req, res, next) => {
       query.city = city;
     }
     const jobSites = await companyService.getJobSite(query, {
-      page,
-      limit,
+      page: Number(page) || 1,
+      limit: Number(limit) || 10,
     });
     res.status(200).json({
       status: "success",

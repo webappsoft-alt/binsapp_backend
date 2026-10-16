@@ -67,6 +67,15 @@ const jobSitesSchema = new Schema(
     /** Exact dumpster / unit placement instructions (reused on exchanges). */
     placementInstructions: { type: String, default: "" },
     placementPhotoUrl: { type: String, default: "" },
+    /** Multi-image support for placement and jobsite reference photos */
+    placementPhotos: {
+      type: [String],
+      default: [],
+    },
+    images: {
+      type: [String],
+      default: [],
+    },
     /** GPS pin for exact placement (separate from human-readable placementLocation). */
     placementGeo: {
       type: {
