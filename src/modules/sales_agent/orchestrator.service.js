@@ -51,6 +51,10 @@ export async function orchestrateSalesConversation({
   funnel = "unknown",
   visitorLocation = null,
   explicitLocation = null,
+  clientLocalDate = null,
+  clientLocalTime = null,
+  clientTimezone = null,
+  clientTimestamp = null,
   onToken = () => {},
   onActionCard = () => {},
 }) {
@@ -77,14 +81,15 @@ export async function orchestrateSalesConversation({
   const previousFunnelState = await getSessionFunnelState(sessionId);
   const newlyExtracted = extractEntitiesFromMessage(
     userMessage,
-    previousFunnelState.collectedData || {}
+    previousFunnelState.collectedData || {},
+    { clientLocalDate, clientLocalTime, clientTimezone, clientTimestamp }
   );
   if (newlyExtracted.registeredServices) {
     delete newlyExtracted.registeredServices;
   }
 
-  // If user explicitly sent location (from LocationPickerCard, LeadFormCard, or options.location):
-  if (explicitLocation) {
+  // If user explicitly sent location (from LocationPickerCard, LeadFormCard, or options.location with isExplicit: true):
+  if (explicitLocation && (explicitLocation.isExplicit === true || explicitLocation.fromUser === true)) {
     if (explicitLocation.address || explicitLocation.deliveryAddress) {
       newlyExtracted.address = explicitLocation.address || explicitLocation.deliveryAddress;
       newlyExtracted.deliveryAddress = explicitLocation.deliveryAddress || explicitLocation.address;
@@ -120,8 +125,9 @@ export async function orchestrateSalesConversation({
   }
 
   // Store detected visitor ZIP as suggestion, but DO NOT auto-fill zipCode unless explicitly given
-  if (visitorLocation?.zip && !newlyExtracted.detectedZip) {
-    newlyExtracted.detectedZip = visitorLocation.zip;
+  const detectedZipCandidate = visitorLocation?.zip || visitorLocation?.zipCode || explicitLocation?.detectedZip;
+  if (detectedZipCandidate && !newlyExtracted.detectedZip) {
+    newlyExtracted.detectedZip = detectedZipCandidate;
   }
 
   let currentFunnelToUse = funnel !== "unknown" ? funnel : previousFunnelState.currentFunnel;
@@ -149,19 +155,36 @@ export async function orchestrateSalesConversation({
         logger.info(`[SalesAgent] Executing AI Vision analysis on ${photosList.length} Junk Removal images for session ${sessionId}...`);
         const analysis = await processJunkAnalysisInBackground(photosList.slice(0, 5), region);
         if (analysis?.ai_detection) {
-          newlyExtracted.junkAnalysis = analysis;
-          const quote = analysis.pricing_result?.quote || analysis.pricing_result?.final_quote;
-          if (quote) {
-            newlyExtracted.estimatedPrice = quote;
+          const confidence = Number(analysis.ai_detection.confidence_score ?? 100);
+          if (confidence < 50) {
+            logger.warn(`[SalesAgent] Junk vision confidence too low (${confidence}% < 50%). Requesting clearer photos.`);
+            newlyExtracted.lowConfidence = true;
+            newlyExtracted.confidenceScore = confidence;
+            newlyExtracted.lowConfidenceReason = `Image confidence score was ${confidence}%, which is below the 50% threshold for accurate automated quotes.`;
+            delete newlyExtracted.photos;
+            newlyExtracted.photosProvided = false;
+            newlyExtracted.photosSkipped = false;
+            delete newlyExtracted.junkAnalysis;
+            delete newlyExtracted.estimatedPrice;
+            delete newlyExtracted.aiEstimatedCubicYards;
+          } else {
+            delete newlyExtracted.lowConfidence;
+            delete newlyExtracted.confidenceScore;
+            delete newlyExtracted.lowConfidenceReason;
+            newlyExtracted.junkAnalysis = analysis;
+            const quote = analysis.pricing_result?.quote || analysis.pricing_result?.final_quote;
+            if (quote) {
+              newlyExtracted.estimatedPrice = quote;
+            }
+            if (analysis.pricing_result?.manual_review_required != null) {
+              newlyExtracted.manualReviewRequired = Boolean(analysis.pricing_result.manual_review_required);
+              newlyExtracted.manualReviewReasons = analysis.pricing_result.manual_review_reasons || [];
+            }
+            if (analysis.ai_detection.estimated_cubic_yards) {
+              newlyExtracted.aiEstimatedCubicYards = analysis.ai_detection.estimated_cubic_yards;
+            }
+            logger.info(`[SalesAgent] Junk Vision complete: ${analysis.ai_detection.estimated_cubic_yards} cy, Quote $${newlyExtracted.estimatedPrice}, ManualReview: ${newlyExtracted.manualReviewRequired}, Confidence: ${confidence}%`);
           }
-          if (analysis.pricing_result?.manual_review_required != null) {
-            newlyExtracted.manualReviewRequired = Boolean(analysis.pricing_result.manual_review_required);
-            newlyExtracted.manualReviewReasons = analysis.pricing_result.manual_review_reasons || [];
-          }
-          if (analysis.ai_detection.estimated_cubic_yards) {
-            newlyExtracted.aiEstimatedCubicYards = analysis.ai_detection.estimated_cubic_yards;
-          }
-          logger.info(`[SalesAgent] Junk Vision complete: ${analysis.ai_detection.estimated_cubic_yards} cy, Quote $${newlyExtracted.estimatedPrice}, ManualReview: ${newlyExtracted.manualReviewRequired}`);
         }
       } catch (junkErr) {
         logger.error(`[SalesAgent] Junk removal vision processing failed for session ${sessionId}:`, junkErr?.message || junkErr);
@@ -171,21 +194,37 @@ export async function orchestrateSalesConversation({
         logger.info(`[SalesAgent] Executing AI Vision analysis on ${photosList.length} Tree Service images for session ${sessionId}...`);
         const analysis = await processTreeAnalysisInBackground(photosList.slice(0, 5), region);
         if (analysis?.ai_detection) {
-          newlyExtracted.treeAnalysis = analysis;
-          const quote = analysis.pricing_result?.quote || analysis.pricing_result?.final_quote;
-          if (quote) {
-            newlyExtracted.estimatedPrice = quote;
+          const confidence = Number(analysis.ai_detection.confidence_score ?? 100);
+          if (confidence < 50) {
+            logger.warn(`[SalesAgent] Tree vision confidence too low (${confidence}% < 50%). Requesting clearer photos.`);
+            newlyExtracted.lowConfidence = true;
+            newlyExtracted.confidenceScore = confidence;
+            newlyExtracted.lowConfidenceReason = `Tree image confidence score was ${confidence}%, which is below the 50% threshold for accurate assessment.`;
+            delete newlyExtracted.photos;
+            newlyExtracted.photosProvided = false;
+            newlyExtracted.photosSkipped = false;
+            delete newlyExtracted.treeAnalysis;
+            delete newlyExtracted.estimatedPrice;
+          } else {
+            delete newlyExtracted.lowConfidence;
+            delete newlyExtracted.confidenceScore;
+            delete newlyExtracted.lowConfidenceReason;
+            newlyExtracted.treeAnalysis = analysis;
+            const quote = analysis.pricing_result?.quote || analysis.pricing_result?.final_quote;
+            if (quote) {
+              newlyExtracted.estimatedPrice = quote;
+            }
+            if (analysis.pricing_result?.manual_review_required != null) {
+              newlyExtracted.manualReviewRequired = Boolean(analysis.pricing_result.manual_review_required);
+              newlyExtracted.manualReviewReasons = analysis.pricing_result.manual_review_reasons || [];
+            }
+            if (analysis.ai_detection.estimated_height_ft) {
+              newlyExtracted.aiEstimatedHeightFt = analysis.ai_detection.estimated_height_ft;
+              newlyExtracted.aiEstimatedDbhIn = analysis.ai_detection.estimated_dbh_in;
+              newlyExtracted.aiTreeType = analysis.ai_detection.tree_type;
+            }
+            logger.info(`[SalesAgent] Tree Vision complete: ${analysis.ai_detection.estimated_height_ft} ft, Quote $${newlyExtracted.estimatedPrice}, ManualReview: ${newlyExtracted.manualReviewRequired}, Confidence: ${confidence}%`);
           }
-          if (analysis.pricing_result?.manual_review_required != null) {
-            newlyExtracted.manualReviewRequired = Boolean(analysis.pricing_result.manual_review_required);
-            newlyExtracted.manualReviewReasons = analysis.pricing_result.manual_review_reasons || [];
-          }
-          if (analysis.ai_detection.estimated_height_ft) {
-            newlyExtracted.aiEstimatedHeightFt = analysis.ai_detection.estimated_height_ft;
-            newlyExtracted.aiEstimatedDbhIn = analysis.ai_detection.estimated_dbh_in;
-            newlyExtracted.aiTreeType = analysis.ai_detection.tree_type;
-          }
-          logger.info(`[SalesAgent] Tree Vision complete: ${analysis.ai_detection.estimated_height_ft} ft, Quote $${newlyExtracted.estimatedPrice}, ManualReview: ${newlyExtracted.manualReviewRequired}`);
         }
       } catch (treeErr) {
         logger.error(`[SalesAgent] Tree service vision processing failed for session ${sessionId}:`, treeErr?.message || treeErr);
@@ -242,6 +281,9 @@ export async function orchestrateSalesConversation({
     userQuery: userMessage,
     visitorLocation,
     registeredServices,
+    clientLocalDate: clientLocalDate || funnelState.collectedData?.clientLocalDate || null,
+    clientLocalTime: clientLocalTime || funnelState.collectedData?.clientLocalTime || null,
+    clientTimezone: clientTimezone || funnelState.collectedData?.clientTimezone || null,
   });
 
   // 6. Invoke OpenAI streaming chat completion with tools
@@ -376,12 +418,13 @@ export async function orchestrateSalesConversation({
     userMessage.trim().toLowerCase() === "resume my booking";
 
   const userAskedQuestion = isQuestionOrInquiry(userMessage);
+  const isLowConfidenceReupload = Boolean(refreshedFunnelState.collectedData?.lowConfidence);
 
-  // Do NOT attach contextual cards if user asked a question or if step did not change (unless explicit resume)
+  // Do NOT attach contextual cards if user asked a question or if step did not change (unless explicit resume or low confidence photo re-upload)
   const shouldEmitStepCard =
     actionCards.length === 0 &&
     !userAskedQuestion &&
-    (stepChanged || isExplicitResumeOrStart);
+    (stepChanged || isExplicitResumeOrStart || isLowConfidenceReupload);
 
   if (shouldEmitStepCard) {
     const contextualCard = generateStepActionCard(

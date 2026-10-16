@@ -89,10 +89,17 @@ console.log("   Funnel Step:", tFunnelState3.currentStep, "(Expected: photos)");
 let tStep4 = extractEntitiesFromMessage("I don't have photos right now, let's continue.", treeData);
 treeData = tStep4;
 let tFunnelState4 = calculateFunnelStep("tree_service", treeData);
-console.log("4. User: 'I don\\'t have photos right now, let\\'s continue.'");
+console.log("4. User tries to skip: 'I don\\'t have photos right now, let\\'s continue.'");
 console.log("   Photos skipped:", treeData.photosSkipped);
-console.log("   Funnel Step:", tFunnelState4.currentStep, "(Expected: checkout)");
-let tCard4 = generateStepActionCard("tree_service", tFunnelState4.currentStep, treeData, "test2");
+console.log("   Funnel Step:", tFunnelState4.currentStep, "(Expected: photos - skipping is blocked)");
+
+let tStep4b = extractEntitiesFromMessage("I uploaded project photos: https://cdn.example.com/tree1.jpg https://cdn.example.com/tree2.jpg", treeData);
+treeData = tStep4b;
+let tFunnelState4b = calculateFunnelStep("tree_service", treeData);
+console.log("5. User: 'I uploaded project photos: https://cdn.example.com/tree1.jpg https://cdn.example.com/tree2.jpg'");
+console.log("   Photos count:", treeData.photos?.length);
+console.log("   Funnel Step:", tFunnelState4b.currentStep, "(Expected: checkout)");
+let tCard4 = generateStepActionCard("tree_service", tFunnelState4b.currentStep, treeData, "test2");
 console.log("   Final Action Card:", tCard4?.cardType);
 console.log("   Card Title:", tCard4?.payload?.title, "(Expected: Request Tree Service)");
 console.log("   Button Text:", tCard4?.payload?.buttonText, "(Expected: Request Service)");
@@ -478,6 +485,67 @@ if (
 }
 
 console.log("   SUCCESS: Existing service detection & duplicate prevention fully verified!");
+
+// TEST 9: Low AI Confidence (< 50%) Image Re-upload Flow
+console.log("\n--- TEST 9: Low AI Confidence (< 50%) Image Re-upload Flow ---");
+// Simulate session with low confidence photos
+let lowConfData = {
+  serviceType: "Junk Removal",
+  projectDescription: "Basement cleanout",
+  zipCode: "75001",
+  junkVolume: "1/2 Truckload",
+  deliveryDate: "2026-10-18",
+  lowConfidence: true,
+  confidenceScore: 38,
+  lowConfidenceReason: "Image confidence score was 38%, which is below the 50% threshold for accurate automated quotes.",
+};
+
+let lowConfStep = calculateFunnelStep("junk_removal", lowConfData);
+console.log("1. Step with lowConfidence = true:");
+console.log("   Funnel Step:", lowConfStep.currentStep, "(Expected: photos)");
+if (lowConfStep.currentStep !== "photos") {
+  console.error("FAIL: Low confidence images must keep funnel on photos step!");
+  process.exit(1);
+}
+
+let reuploadCard = generateStepActionCard("junk_removal", lowConfStep.currentStep, lowConfData, "sess_test9");
+console.log("2. Re-upload Action Card:");
+console.log("   Card Title:", reuploadCard?.payload?.title, "(Expected: Please Upload 2 Clearer Photos)");
+console.log("   isReupload:", reuploadCard?.payload?.isReupload, "(Expected: true)");
+console.log("   confidenceScore:", reuploadCard?.payload?.confidenceScore, "(Expected: 38)");
+
+if (
+  reuploadCard?.payload?.title !== "Please Upload 2 Clearer Photos" ||
+  reuploadCard?.payload?.isReupload !== true ||
+  reuploadCard?.payload?.confidenceScore !== 38
+) {
+  console.error("FAIL: Re-upload action card must indicate clearer photos are required with confidence score!");
+  process.exit(1);
+}
+console.log("   SUCCESS: Low confidence photo re-upload card generated correctly!");
+
+// 3. User re-uploads with high confidence (e.g. 85%)
+let highConfData = {
+  ...lowConfData,
+  photos: ["https://storage.googleapis.com/test/photo1.jpg", "https://storage.googleapis.com/test/photo2.jpg"],
+  photosProvided: true,
+};
+delete highConfData.lowConfidence;
+delete highConfData.confidenceScore;
+delete highConfData.lowConfidenceReason;
+highConfData.junkAnalysis = {
+  ai_detection: { confidence_score: 85, estimated_cubic_yards: 3 },
+  pricing_result: { quote: 245, manual_review_required: false },
+};
+
+let highConfStep = calculateFunnelStep("junk_removal", highConfData);
+console.log("3. Step after clearer photos uploaded (confidence 85%):");
+console.log("   Funnel Step:", highConfStep.currentStep, "(Expected: checkout)");
+if (highConfStep.currentStep !== "checkout") {
+  console.error("FAIL: High confidence re-upload must advance to checkout!");
+  process.exit(1);
+}
+console.log("   SUCCESS: High confidence re-upload cleanly advanced to checkout!");
 
 console.log("\n=== ALL FLOW TESTS COMPLETED SUCCESSFULLY ===");
 process.exit(0);

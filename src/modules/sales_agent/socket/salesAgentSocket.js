@@ -280,6 +280,20 @@ export function initSalesAgentSocket(io) {
           socket.visitorId = payload.visitorId.trim();
         }
 
+        if (payload?.clientLocalDate) socket.clientLocalDate = payload.clientLocalDate;
+        if (payload?.clientLocalTime) socket.clientLocalTime = payload.clientLocalTime;
+        if (payload?.clientTimezone) socket.clientTimezone = payload.clientTimezone;
+        if (payload?.clientTimestamp) socket.clientTimestamp = payload.clientTimestamp;
+
+        const initialDateUpdates = {};
+        if (payload?.clientLocalDate) initialDateUpdates.clientLocalDate = payload.clientLocalDate;
+        if (payload?.clientLocalTime) initialDateUpdates.clientLocalTime = payload.clientLocalTime;
+        if (payload?.clientTimezone) initialDateUpdates.clientTimezone = payload.clientTimezone;
+        if (payload?.clientTimestamp) initialDateUpdates.clientTimestamp = payload.clientTimestamp;
+        if (Object.keys(initialDateUpdates).length > 0) {
+          await updateSessionFunnelState(sessionId, { collectedData: initialDateUpdates });
+        }
+
         if (payload?.token && !socket.userId) {
           let decoded = null;
           const secret = config.get("jwtSecret");
@@ -411,9 +425,19 @@ export function initSalesAgentSocket(io) {
     socket.on("sales:send_message", async (data, callback) => {
       const userMessage = data?.message || (typeof data === "string" ? data : "");
       const funnel = data?.funnel || "unknown";
-      const location = data?.location || socket.visitorLocation;
-      if (data?.location) {
-        socket.visitorLocation = { ...(socket.visitorLocation || {}), ...data.location };
+      const rawLocation = data?.location;
+      const isExplicitLocation = Boolean(
+        rawLocation && (rawLocation.isExplicit === true || rawLocation.fromUser === true)
+      );
+      const explicitLocation = isExplicitLocation ? rawLocation : null;
+      const visitorLocation =
+        data?.visitorLocation ||
+        (!isExplicitLocation && rawLocation ? rawLocation : null) ||
+        socket.visitorLocation ||
+        null;
+
+      if (visitorLocation) {
+        socket.visitorLocation = { ...(socket.visitorLocation || {}), ...visitorLocation };
       }
 
       if (!userMessage || typeof userMessage !== "string" || userMessage.trim().length === 0) {
@@ -422,6 +446,18 @@ export function initSalesAgentSocket(io) {
         }
         return;
       }
+
+      // Deduplicate rapid identical messages on the same socket (e.g. from double-click or simultaneous submits)
+      const now = Date.now();
+      const lastMsg = socket._lastUserMessage;
+      if (lastMsg && lastMsg.text === userMessage.trim() && now - lastMsg.time < 1500) {
+        logger.warn(`[SalesAgent] Ignored duplicate rapid message on session ${sessionId}: "${userMessage.trim().slice(0, 30)}..."`);
+        if (typeof callback === "function") {
+          callback({ success: true, duplicate: true });
+        }
+        return;
+      }
+      socket._lastUserMessage = { text: userMessage.trim(), time: now };
 
       // Check if session is currently paused for human operator
       const paused = await isSessionPaused(sessionId);
@@ -441,6 +477,16 @@ export function initSalesAgentSocket(io) {
         return;
       }
 
+      const clientLocalDate = data?.clientLocalDate || socket.clientLocalDate || null;
+      const clientLocalTime = data?.clientLocalTime || socket.clientLocalTime || null;
+      const clientTimezone = data?.clientTimezone || socket.clientTimezone || null;
+      const clientTimestamp = data?.clientTimestamp || socket.clientTimestamp || null;
+
+      if (data?.clientLocalDate) socket.clientLocalDate = data.clientLocalDate;
+      if (data?.clientLocalTime) socket.clientLocalTime = data.clientLocalTime;
+      if (data?.clientTimezone) socket.clientTimezone = data.clientTimezone;
+      if (data?.clientTimestamp) socket.clientTimestamp = data.clientTimestamp;
+
       // Signal typing start
       socket.emit("sales:typing_indicator", { isTyping: true, sessionId });
 
@@ -451,8 +497,12 @@ export function initSalesAgentSocket(io) {
           visitorId: socket.visitorId || null,
           userMessage: userMessage.trim(),
           funnel,
-          visitorLocation: location,
-          explicitLocation: data?.location || null,
+          visitorLocation,
+          explicitLocation,
+          clientLocalDate,
+          clientLocalTime,
+          clientTimezone,
+          clientTimestamp,
           onToken: ({ token, chunkIndex }) => {
             socket.emit("sales:stream_token", {
               token,

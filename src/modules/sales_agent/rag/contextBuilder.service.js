@@ -23,17 +23,22 @@ You are the BinsApp AI Sales Agent — an expert, friendly, and consultative sal
 11. PROVIDER ONBOARDING: Remind prospective haulers that it is 100% FREE to register, FREE to receive job alerts, and NO monthly subscription required.
 12. COMMERCIAL / CONTRACTOR: Highlight trade volume rates and dedicated account support ONLY if the user explicitly asks to register a contractor trade account. NEVER force regular rentees or customers asking for dumpster rentals into contractor trade account forms.
 13. SUPPORT / ACTIVE ORDERS: If a customer asks about an active order ("where is my dumpster", "need a swap", "driver status"), politely transfer to customer support rather than treating it as a new sales lead.
+14. DELIVERY DATE SCHEDULING RULES (STRICT & ABSOLUTE):
+   - NEXT-DAY & SAME-DAY DELIVERY AVAILABLE: BinsApp providers deliver Monday through Saturday, with next-day (and same-day where available) delivery fully supported.
+   - NEVER REJECT "TOMORROW": When a customer selects "Tomorrow" or chooses any delivery date presented to them in the quick reply buttons, YOU MUST ALWAYS ACCEPT AND CONFIRM IT IMMEDIATELY.
+   - ZERO CONTRADICTION: Never claim that you cannot schedule for tomorrow, and never tell the customer that the earliest available date is a later date when they selected or requested a suggested date. The date options presented in the UI are 100% verified and available.
+   - IMMEDIATE CHECKOUT TRANSITION: Once delivery location, dumpster size, and delivery date are collected, acknowledge the delivery date with enthusiasm (e.g. "I've scheduled your [size] dumpster delivery for tomorrow, [Day, Month Date].") and IMMEDIATELY call generate_prefilled_checkout tool or present the checkout card so the customer can complete their booking.
 `.trim();
 
 export const FUNNEL_DIRECTIVES = {
-  dumpster_rental: "Goal: Recommend size (10, 20, 30, 40 Yard), collect full delivery address or ZIP with Google Places, confirm delivery date, and provide quote & prefilled booking checkout link. If user asks for nearby providers or a specific search radius, use find_nearby_dumpster_providers.",
+  dumpster_rental: "Goal: Recommend size (10, 20, 30, 40 Yard), collect full delivery address or ZIP with Google Places, confirm delivery date (ALWAYS accept 'Tomorrow' and next-day requests immediately without friction), and provide quote & prefilled booking checkout link. If user asks for nearby providers or a specific search radius, use find_nearby_dumpster_providers.",
   junk_removal: `Goal: Guide user through the exact Junk Removal workflow:
 Questions to ask in strict order:
 1. What do you need removed? (Acknowledge items / cleanout scope, e.g. "Old house cleanout", furniture, appliances, or debris)
 2. Where is it located? (Ask for full jobsite address or ZIP code via Google Places so our local team can verify distance and coverage)
 3. Approximately how much junk is there? (Ask for volume: Single Bulky Item, 1/4 Truckload, 1/2 Truckload, Full Truckload, Multiple Truckloads)
 4. When do you need it removed? (Ask for date/timing: Today, Tomorrow, In 2-3 Days, This Weekend, Flexible)
-5. Upload Photos — require exactly 2 clear photos (Our AI vision engine analyzes the 2 photos immediately to estimate volume and calculate the quote; user can upload 2 photos or skip)
+5. Upload Photos — require exactly 2 clear photos (Our AI vision engine analyzes the 2 photos immediately to estimate volume and calculate the quote; photos are strictly mandatory for an automated quote)
 Then:
 Present the "Continue to Book / Request Service" card for Junk Removal (/book/junk-removal) with the pre-calculated quote.
 
@@ -41,6 +46,7 @@ CRITICAL RULES FOR JUNK REMOVAL:
 - THIS IS STRICTLY JUNK REMOVAL. NEVER mention dumpsters, roll-off bins, or dumpster yard sizes (10/20/30/40 Yard).
 - Even if image upload URLs contain "dumpster" or storage domains, DO NOT switch service to Dumpster Rental. Keep serviceType: "Junk Removal".
 - When photos are uploaded, the AI vision system analyzes them. If junkAnalysis is present in Already Collected Data, acknowledge the estimated volume (cubic yards), detected items, and quote. If manualReviewRequired is true, inform the user that their request requires admin review before confirmation.
+- LOW IMAGE CONFIDENCE RULE (< 50%): If lowConfidence is true in Already Collected Data (the vision confidence score is below 50%), the uploaded photos were too blurry, dark, or unclear. Inform the customer politely that the photos were not clear enough for our AI to accurately estimate volume (mention the confidence score e.g. "confidence was only 35%"). Ask them to please upload 2 clearer, well-lit photos showing the junk clearly so our AI can calculate the quote. Photos are mandatory—do NOT offer a skip option.
 - When calling generate_prefilled_checkout, serviceType MUST be "Junk Removal".`,
   tree_service: `Goal: Guide user through the exact Tree Service workflow:
 First ask:
@@ -57,14 +63,15 @@ Then ask sequentially:
 1. Location (Ask for 5-digit delivery ZIP code)
 2. Job description (Ask for property & access details: tree height, backyard vs front yard, gate access, near house roof, near power lines)
 3. Timing / urgency (Emergency / Hazard, Within 24-48 Hours, This Week, Flexible)
-4. Upload Photos (Require exactly 2 clear photos. Our AI vision inspector analyzes tree height, access, and hazards immediately to build the quote; user can upload 2 photos or skip)
+4. Upload Photos (Require exactly 2 clear photos. Our AI vision inspector analyzes tree height, access, and hazards immediately to build the quote; photos are strictly mandatory for an AI quote)
 
 CRITICAL RULES FOR TREE SERVICE:
 - When 2 photos are uploaded, the AI vision system analyzes the photos. If treeAnalysis is present in Already Collected Data, report the detected tree height, trunk diameter, access level, hazards, and estimated quote to the user.
+- LOW IMAGE CONFIDENCE RULE (< 50%): If lowConfidence is true in Already Collected Data (the vision confidence score is below 50%), the photos were too blurry, dark, or obstructed. Inform the customer politely that the photos were not clear enough for accurate tree assessment (mention the confidence score). Ask them to please upload 2 clearer, well-lit photos showing the full tree and ground access. Photos are mandatory—do NOT offer a skip option.
 - If manualReviewRequired is true or site factors (e.g. multiple trees, proximity to structures, utility lines, excessive height, or low confidence) trigger manual review, explicitly inform the customer that their request will be submitted for certified arborist & admin review, state the reasons, and report the estimated quote. Emphasize that they can submit it for arborist review right away.
 - THIS IS STRICTLY TREE SERVICE. NEVER mention dumpsters, roll-off bins, or dumpster yard sizes.
 - Even if image upload URLs contain "dumpster" or storage domains, DO NOT switch service to Dumpster Rental. Keep serviceType: "Tree Removal".
-- Once photos are uploaded or skipped, call generate_prefilled_checkout with serviceType: "Tree Removal" to present the "Request Service" action card for Tree Service at /book/tree-removal.`,
+- Once 2 clear photos are uploaded and analyzed, call generate_prefilled_checkout with serviceType: "Tree Removal" to present the "Request Service" action card for Tree Service at /book/tree-removal.`,
   provider_onboarding: `Goal: Guide prospective equipment operators and haulers through the exact Provider Onboarding workflow:
 
 Step 1: When user selects or expresses "I WANT TO JOIN AS A PROVIDER":
@@ -267,12 +274,50 @@ export function buildAugmentedPrompt({
   userQuery,
   visitorLocation = null,
   registeredServices = null,
+  clientLocalDate = null,
+  clientLocalTime = null,
+  clientTimezone = null,
 }) {
   const activeFunnel = funnelState?.currentFunnel || funnel;
   const funnelDirective = FUNNEL_DIRECTIVES[activeFunnel] || FUNNEL_DIRECTIVES.unknown;
   const ragContext = formatRAGContext(ragChunks);
 
   let systemPrompt = `${BASE_SALES_SYSTEM_PROMPT}\n\n### ACTIVE FUNNEL OBJECTIVE:\n${funnelDirective}`;
+
+  // Ground truth date anchor to eliminate date drift and ensure LLM awareness of today & tomorrow
+  const effectiveLocalDate =
+    clientLocalDate ||
+    funnelState?.collectedData?.clientLocalDate ||
+    new Date().toISOString().split("T")[0];
+  let todayObj, tomorrowObj;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(effectiveLocalDate)) {
+    const [y, m, d] = effectiveLocalDate.split("-").map(Number);
+    todayObj = new Date(y, m - 1, d, 12, 0, 0);
+    tomorrowObj = new Date(y, m - 1, d + 1, 12, 0, 0);
+  } else {
+    todayObj = new Date();
+    tomorrowObj = new Date(todayObj.getTime() + 24 * 60 * 60 * 1000);
+  }
+
+  const todayFormatted = todayObj.toLocaleDateString("en-US", {
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+  const tomorrowFormatted = tomorrowObj.toLocaleDateString("en-US", {
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+  const tomorrowIso = `${tomorrowObj.getFullYear()}-${String(tomorrowObj.getMonth() + 1).padStart(2, "0")}-${String(tomorrowObj.getDate()).padStart(2, "0")}`;
+
+  systemPrompt += `\n\n### CURRENT DATE & TIME (GROUND TRUTH):
+Today is: ${todayFormatted} (${effectiveLocalDate})${clientLocalTime ? ` at ${clientLocalTime}` : ""}
+Tomorrow is: ${tomorrowFormatted} (${tomorrowIso})
+Timezone: ${clientTimezone || funnelState?.collectedData?.clientTimezone || "America/New_York"}
+NOTE: When the customer asks for or clicks "Tomorrow", they mean ${tomorrowFormatted} (${tomorrowIso}). Next-day delivery for ${tomorrowFormatted} is 100% supported and verified. Confirm it immediately!`;
 
   if (funnelState) {
     systemPrompt += `\n\n### CURRENT FUNNEL & COLLECTED DATA STATE:

@@ -117,41 +117,60 @@ export async function getLiveDumpsterSizes() {
  * @param {string} text
  * @returns {string|null}
  */
-export function normalizeDate(text) {
+export function normalizeDate(text, options = {}) {
   if (!text || typeof text !== "string") return null;
   const lower = text.toLowerCase().trim();
-  const now = new Date();
-  const currentYear = now.getFullYear();
 
-  // 1. Today / Now / ASAP
-  if (/\b(today|now|asap)\b/i.test(lower)) {
-    return now.toISOString().split("T")[0];
-  }
-
-  // 2. Tomorrow
-  if (/\btomorrow\b/i.test(lower)) {
-    const d = new Date(now.getTime() + 24 * 60 * 60 * 1000);
-    return d.toISOString().split("T")[0];
-  }
-
-  // 3. In X days / in a week
-  const inDaysMatch = lower.match(/\bin\s+(\d+)\s+days?\b/i);
-  if (inDaysMatch) {
-    const d = new Date(now.getTime() + parseInt(inDaysMatch[1], 10) * 24 * 60 * 60 * 1000);
-    return d.toISOString().split("T")[0];
-  }
-  if (/\bin\s+(?:a|1)\s+week\b/i.test(lower)) {
-    const d = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
-    return d.toISOString().split("T")[0];
-  }
-
-  // 4. ISO format: YYYY-MM-DD
+  // If text contains an explicit ISO date YYYY-MM-DD anywhere, e.g. "Tomorrow (2026-10-14)" or "2026-10-14"
   const isoMatch = lower.match(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/);
   if (isoMatch) {
     const y = isoMatch[1];
     const m = String(isoMatch[2]).padStart(2, "0");
     const d = String(isoMatch[3]).padStart(2, "0");
     return `${y}-${m}-${d}`;
+  }
+
+  // Derive reference date anchor (local noon) to avoid any UTC day shift
+  let baseDate;
+  if (options.clientLocalDate && /^\d{4}-\d{2}-\d{2}$/.test(options.clientLocalDate)) {
+    const [y, m, d] = options.clientLocalDate.split("-").map(Number);
+    baseDate = new Date(y, m - 1, d, 12, 0, 0);
+  } else if (options.clientTimestamp) {
+    const parsed = new Date(options.clientTimestamp);
+    baseDate = Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+  } else {
+    baseDate = new Date();
+  }
+  const currentYear = baseDate.getFullYear();
+
+  const toIsoString = (d) => {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  };
+
+  // 1. Today / Now / ASAP
+  if (/\b(today|now|asap)\b/i.test(lower)) {
+    return toIsoString(baseDate);
+  }
+
+  // 2. Tomorrow
+  if (/\btomorrow\b/i.test(lower)) {
+    const target = new Date(baseDate.getFullYear(), baseDate.getMonth(), baseDate.getDate() + 1, 12, 0, 0);
+    return toIsoString(target);
+  }
+
+  // 3. In X days / in a week
+  const inDaysMatch = lower.match(/\bin\s+(\d+)\s+days?\b/i);
+  if (inDaysMatch) {
+    const daysToAdd = parseInt(inDaysMatch[1], 10);
+    const target = new Date(baseDate.getFullYear(), baseDate.getMonth(), baseDate.getDate() + daysToAdd, 12, 0, 0);
+    return toIsoString(target);
+  }
+  if (/\bin\s+(?:a|1)\s+week\b/i.test(lower)) {
+    const target = new Date(baseDate.getFullYear(), baseDate.getMonth(), baseDate.getDate() + 7, 12, 0, 0);
+    return toIsoString(target);
   }
 
   // 5. Month name variations: 'September 10', 'Sep 10, 2026', 'Sep 10th', '10 September', '10th of September'
@@ -199,14 +218,14 @@ export function normalizeDate(text) {
     const wMatch = lower.match(weekdayRegex);
     if (wMatch) {
       const modifier = (wMatch[1] || "").trim();
-      const currentDay = now.getDay();
+      const currentDay = baseDate.getDay();
       let diff = i - currentDay;
       if (diff <= 0) diff += 7;
       if (modifier === "next" && diff < 7) {
         diff += 7;
       }
-      const targetDate = new Date(now.getTime() + diff * 24 * 60 * 60 * 1000);
-      return targetDate.toISOString().split("T")[0];
+      const targetDate = new Date(baseDate.getFullYear(), baseDate.getMonth(), baseDate.getDate() + diff, 12, 0, 0);
+      return toIsoString(targetDate);
     }
   }
 
@@ -250,9 +269,10 @@ export function isQuestionOrInquiry(text = "") {
  *
  * @param {string} text - User message
  * @param {Object} [existingData={}] - Already collected fields
+ * @param {Object} [options={}] - Context metadata including clientLocalDate, clientTimezone
  * @returns {Object} Newly extracted and updated fields
  */
-export function extractEntitiesFromMessage(text = "", existingData = {}) {
+export function extractEntitiesFromMessage(text = "", existingData = {}, options = {}) {
   if (!text || typeof text !== "string") return { ...existingData };
 
   // Strip URLs before analyzing text for keywords so photo bucket URLs (e.g. storage.googleapis.com/dumpster-df2b0...) don't trigger dumpster keywords!
@@ -727,10 +747,16 @@ export function extractEntitiesFromMessage(text = "", existingData = {}) {
   }
 
   // 8. Delivery Date (Natural language & ISO)
-  const parsedDate = normalizeDate(textWithoutUrls);
+  const clientLocalDate = options.clientLocalDate || existingData.clientLocalDate;
+  const clientTimestamp = options.clientTimestamp || existingData.clientTimestamp;
+  const parsedDate = normalizeDate(textWithoutUrls, { clientLocalDate, clientTimestamp });
   if (parsedDate) {
     extracted.deliveryDate = parsedDate;
   }
+  if (options.clientLocalDate) extracted.clientLocalDate = options.clientLocalDate;
+  if (options.clientLocalTime) extracted.clientLocalTime = options.clientLocalTime;
+  if (options.clientTimezone) extracted.clientTimezone = options.clientTimezone;
+  if (options.clientTimestamp) extracted.clientTimestamp = options.clientTimestamp;
 
   // 9. Phone Number
   const phoneMatch = textWithoutUrls.match(/(?:\+?1[-.\s]?)?\(?([0-9]{3})\)?[-.\s]?([0-9]{3})[-.\s]?([0-9]{4})/);
@@ -751,23 +777,13 @@ export function extractEntitiesFromMessage(text = "", existingData = {}) {
     text.match(/https?:\/\/[^\s]+(?:\.(?:jpg|jpeg|png|webp|heic|heif|gif|avif)|\/uploads\/[^\s]+)/gi) ||
     (lower.includes("uploaded project photos") ? text.match(/https?:\/\/[^\s]+/gi) : null);
   if (urlMatch) {
-    const existingPhotos = Array.isArray(extracted.photos) ? extracted.photos : [];
-    extracted.photos = Array.from(new Set([...existingPhotos, ...urlMatch]));
+    extracted.photos = urlMatch;
     extracted.photosProvided = true;
+    delete extracted.photosSkipped;
   }
 
-  // 12. Photo Skip Intent
-  if (
-    lower.includes("skip") ||
-    lower.includes("no photo") ||
-    lower.includes("no photos") ||
-    lower.includes("don't have photos") ||
-    lower.includes("do not have photos") ||
-    lower.includes("continue without photo") ||
-    lower.includes("no pictures")
-  ) {
-    extracted.photosSkipped = true;
-  }
+  // 12. Photo Skip Intent disabled - photos are mandatory for AI vision quote analysis
+  delete extracted.photosSkipped;
 
   return extracted;
 }
@@ -922,8 +938,11 @@ export function calculateFunnelStep(funnel = "initial", collectedData = {}, regi
         isComplete: false,
       };
     }
-    // 5. Upload Photos (Optional — can be skipped or uploaded)
-    if (!collectedData.photosProvided && !collectedData.photosSkipped && (!collectedData.photos || collectedData.photos.length === 0)) {
+    // 5. Upload Photos (Strictly required for AI quote - minimum 2 clear photos)
+    const hasValidPhotos =
+      Boolean(collectedData.photosProvided || (Array.isArray(collectedData.photos) && collectedData.photos.length >= 2)) &&
+      !collectedData.lowConfidence;
+    if (!hasValidPhotos) {
       return {
         currentFunnel: "junk_removal",
         currentStep: "photos",
@@ -984,8 +1003,11 @@ export function calculateFunnelStep(funnel = "initial", collectedData = {}, regi
         isComplete: false,
       };
     }
-    // 4. Upload Photos (Optional — can be skipped or uploaded)
-    if (!collectedData.photosProvided && !collectedData.photosSkipped && (!collectedData.photos || collectedData.photos.length === 0)) {
+    // 4. Upload Photos (Strictly required for AI quote - minimum 2 clear photos)
+    const hasValidPhotos =
+      Boolean(collectedData.photosProvided || (Array.isArray(collectedData.photos) && collectedData.photos.length >= 2)) &&
+      !collectedData.lowConfidence;
+    if (!hasValidPhotos) {
       return {
         currentFunnel: "tree_service",
         currentStep: "photos",
@@ -1542,16 +1564,44 @@ export function generateStepActionCard(
 
   // Dumpster Delivery Date Card
   if (currentFunnel === "dumpster_rental" && currentStep === "delivery_date") {
+    const refDate = collectedData.clientLocalDate || new Date().toISOString().split("T")[0];
+    let baseDate;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(refDate)) {
+      const [y, m, d] = refDate.split("-").map(Number);
+      baseDate = new Date(y, m - 1, d, 12, 0, 0);
+    } else {
+      baseDate = new Date();
+    }
+
+    const getShiftedDate = (days) => {
+      const target = new Date(baseDate.getFullYear(), baseDate.getMonth(), baseDate.getDate() + days, 12, 0, 0);
+      const iso = `${target.getFullYear()}-${String(target.getMonth() + 1).padStart(2, "0")}-${String(target.getDate()).padStart(2, "0")}`;
+      const short = target.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+      return { iso, short };
+    };
+
+    const tomorrow = getShiftedDate(1);
+    const in2Days = getShiftedDate(2);
+
+    const currentDay = baseDate.getDay(); // 0 is Sun, 5 is Fri, 1 is Mon
+    let daysToFriday = 5 - currentDay;
+    if (daysToFriday <= 1) daysToFriday += 7;
+    let daysToMonday = 1 - currentDay;
+    if (daysToMonday <= 1) daysToMonday += 7;
+
+    const friday = getShiftedDate(daysToFriday);
+    const monday = getShiftedDate(daysToMonday);
+
     return {
       cardType: "quick_replies",
       sessionId,
       payload: {
         title: "When do you need the dumpster delivered?",
         options: [
-          { label: "Tomorrow", value: "Tomorrow" },
-          { label: "In 2 Days", value: "In 2 days" },
-          { label: "This Friday", value: "This Friday" },
-          { label: "Next Monday", value: "Next Monday" },
+          { label: `Tomorrow (${tomorrow.short})`, value: `Tomorrow (${tomorrow.iso})` },
+          { label: `In 2 Days (${in2Days.short})`, value: `In 2 days (${in2Days.iso})` },
+          { label: `Friday (${friday.short})`, value: `Friday (${friday.iso})` },
+          { label: `Next Monday (${monday.short})`, value: `Next Monday (${monday.iso})` },
         ],
       },
     };
@@ -1654,6 +1704,25 @@ export function generateStepActionCard(
 
   // Junk Removal: Timing Selection Card
   if (currentFunnel === "junk_removal" && currentStep === "timing") {
+    const refDate = collectedData.clientLocalDate || new Date().toISOString().split("T")[0];
+    let baseDate;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(refDate)) {
+      const [y, m, d] = refDate.split("-").map(Number);
+      baseDate = new Date(y, m - 1, d, 12, 0, 0);
+    } else {
+      baseDate = new Date();
+    }
+
+    const getShiftedDate = (days) => {
+      const target = new Date(baseDate.getFullYear(), baseDate.getMonth(), baseDate.getDate() + days, 12, 0, 0);
+      const iso = `${target.getFullYear()}-${String(target.getMonth() + 1).padStart(2, "0")}-${String(target.getDate()).padStart(2, "0")}`;
+      const short = target.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+      return { iso, short };
+    };
+
+    const tomorrow = getShiftedDate(1);
+    const in2Days = getShiftedDate(2);
+
     return {
       cardType: "quick_replies",
       sessionId,
@@ -1661,8 +1730,8 @@ export function generateStepActionCard(
         title: "When do you need it removed?",
         options: [
           { label: "Today / ASAP", value: "Today" },
-          { label: "Tomorrow", value: "Tomorrow" },
-          { label: "In 2-3 Days", value: "In 2-3 days" },
+          { label: `Tomorrow (${tomorrow.short})`, value: `Tomorrow (${tomorrow.iso})` },
+          { label: `In 2-3 Days (${in2Days.short})`, value: `In 2-3 days (${in2Days.iso})` },
           { label: "This Weekend", value: "This Weekend" },
           { label: "Flexible Timing", value: "Flexible" },
         ],
@@ -1670,14 +1739,18 @@ export function generateStepActionCard(
     };
   }
 
-  // Junk Removal: Photos Card (Optional - exactly 2 photos for AI quote analysis)
+  // Junk Removal: Photos Card (Strictly required - exactly 2 photos for AI quote analysis)
   if (currentFunnel === "junk_removal" && currentStep === "photos") {
+    const isLowConfidence = Boolean(collectedData.lowConfidence);
+    const score = collectedData.confidenceScore;
     return {
       cardType: "media_upload",
       sessionId,
       payload: {
-        title: "Upload 2 Photos for Instant AI Quote",
-        description: "Upload exactly 2 clear photos of your junk. Our AI will analyze them immediately to estimate volume and generate your quote (or skip to proceed).",
+        title: isLowConfidence ? "Please Upload 2 Clearer Photos" : "Upload 2 Photos for Instant AI Quote",
+        description: isLowConfidence
+          ? `The uploaded photos were too blurry or unclear (AI confidence: ${score != null ? `${score}%` : "below 50%"}). Please upload 2 well-lit, clearer photos showing the items clearly so our AI can accurately calculate your quote.`
+          : "Upload exactly 2 clear photos of your junk. Our AI will analyze them immediately to estimate volume and generate your quote.",
         serviceType: "Junk Removal",
         acceptedFormats: [
           "image/jpeg",
@@ -1690,7 +1763,9 @@ export function generateStepActionCard(
         ],
         minFiles: 2,
         maxFiles: 2,
-        optional: true,
+        optional: false,
+        isReupload: isLowConfidence,
+        confidenceScore: score || null,
       },
     };
   }
@@ -1809,14 +1884,18 @@ export function generateStepActionCard(
     };
   }
 
-  // Tree Service: Photos Card (Optional - exactly 2 photos for AI tree assessment)
+  // Tree Service: Photos Card (Strictly required - exactly 2 photos for AI tree assessment)
   if (currentFunnel === "tree_service" && currentStep === "photos") {
+    const isLowConfidence = Boolean(collectedData.lowConfidence);
+    const score = collectedData.confidenceScore;
     return {
       cardType: "media_upload",
       sessionId,
       payload: {
-        title: "Upload 2 Photos for Instant AI Tree Assessment",
-        description: "Upload exactly 2 clear photos of the tree. Our AI inspector will analyze height, access, and hazards to prepare your quote (or skip to proceed).",
+        title: isLowConfidence ? "Please Upload 2 Clearer Photos" : "Upload 2 Photos for Instant AI Tree Assessment",
+        description: isLowConfidence
+          ? `The uploaded photos were too blurry or obstructed (AI confidence: ${score != null ? `${score}%` : "below 50%"}). Please upload 2 well-lit, clearer photos showing the full tree and ground access.`
+          : "Upload exactly 2 clear photos of the tree. Our AI inspector will analyze height, access, and hazards to prepare your quote.",
         serviceType: "Tree Removal",
         acceptedFormats: [
           "image/jpeg",
@@ -1829,7 +1908,9 @@ export function generateStepActionCard(
         ],
         minFiles: 2,
         maxFiles: 2,
-        optional: true,
+        optional: false,
+        isReupload: isLowConfidence,
+        confidenceScore: score || null,
       },
     };
   }
@@ -2464,10 +2545,28 @@ export async function updateSessionFunnelState(sessionId, stateUpdates = {}) {
     delete baseData.checkoutInitiated;
     mergedCollectedData = { ...baseData, ...(stateUpdates.collectedData || {}) };
   } else {
-    mergedCollectedData = {
-      ...(existing.collectedData || {}),
-      ...(stateUpdates.collectedData || {}),
-    };
+    if (stateUpdates.collectedData?.lowConfidence) {
+      const baseData = { ...(existing.collectedData || {}) };
+      delete baseData.photos;
+      delete baseData.photosProvided;
+      delete baseData.junkAnalysis;
+      delete baseData.treeAnalysis;
+      delete baseData.estimatedPrice;
+      delete baseData.aiEstimatedCubicYards;
+      mergedCollectedData = { ...baseData, ...(stateUpdates.collectedData || {}) };
+      delete mergedCollectedData.photos;
+      delete mergedCollectedData.photosProvided;
+    } else {
+      mergedCollectedData = {
+        ...(existing.collectedData || {}),
+        ...(stateUpdates.collectedData || {}),
+      };
+      if (stateUpdates.collectedData && !stateUpdates.collectedData.lowConfidence) {
+        delete mergedCollectedData.lowConfidence;
+        delete mergedCollectedData.confidenceScore;
+        delete mergedCollectedData.lowConfidenceReason;
+      }
+    }
   }
 
   // Derive target funnel dynamically from intent and serviceType
