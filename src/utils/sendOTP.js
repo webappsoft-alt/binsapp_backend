@@ -85,12 +85,20 @@ export function parseTwilioError(err) {
         ? `https://www.twilio.com/docs/errors/${twilioCode}`
         : null;
 
-  const hint =
+  let hint =
     (twilioCode && TWILIO_ERROR_HINTS[twilioCode]) ||
     (httpStatus === 401
       ? "Twilio rejected credentials (401). Verify TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, and TWILIO_SERVICE_SID on the server."
       : null) ||
     "See twilioCode and moreInfo for details.";
+
+  if (
+    twilioCode === 60200 &&
+    (twilioMessage.includes("`To`") || twilioMessage.includes("'To'"))
+  ) {
+    hint =
+      "Invalid phone number format. US area codes cannot start with 0 or 1 (e.g., use a real US number like +1 202 555 0123).";
+  }
 
   return {
     httpStatus,

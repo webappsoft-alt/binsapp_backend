@@ -91,7 +91,9 @@ export async function assertOtpSendAllowed({ phone, ip }) {
       allowedPrefixes: allowedPrefixes(),
       pkWhitelistCount: pkWhitelistPhones().size,
     });
-    throw new BadRequestError("Phone number region is not supported");
+    throw new BadRequestError(
+      "Only US (+1) phone numbers are currently supported for SMS verification. International numbers are not supported.",
+    );
   }
 
   const cooldownKey = `otp:cooldown:phone:${normalizedPhone}`;
