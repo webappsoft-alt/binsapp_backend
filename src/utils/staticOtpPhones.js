@@ -35,6 +35,8 @@ export const STATIC_OTP_PHONES = new Set([
   "+923390126756",
   "+13105550115",
   "+13105550116",
+  "+13123987457",
+  "+13123987456"
 ]);
 
 export function isStaticOtpPhone(phone) {
