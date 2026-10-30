@@ -158,4 +158,5 @@ const AssignOrderSchema = new Schema(
 );
 const AssignOrder = model("AssignOrder", AssignOrderSchema);
 export { AssignOrder, SubUserDetail };
+export default AssignOrder;
 

@@ -772,3 +772,17 @@ export async function getUserByService(req, res, next) {
     next(error);
   }
 }
+
+export async function getAdminPaymentsLedgerController(req, res, next) {
+  try {
+    const result = await adminService.getAdminPaymentsLedger(req.query);
+    res.status(200).json({
+      success: true,
+      message: "Admin payments ledger fetched successfully",
+      data: result,
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+

@@ -118,3 +118,29 @@ export async function billOverageToInvoice({
     notify: true,
   });
 }
+
+export async function billSurchargeToInvoice({
+  companyId,
+  userId,
+  orderId,
+  amount,
+  title,
+  surchargeType = "other",
+  description = "",
+  metadata = {},
+}) {
+  return createOrAppendInvoiceLine({
+    companyId,
+    userId,
+    orderId,
+    amount,
+    type: "surcharge",
+    description: title || description || "Extra Surcharge",
+    metadata: {
+      ...metadata,
+      surchargeType,
+      action: "surcharge_billed",
+    },
+    notify: true,
+  });
+}

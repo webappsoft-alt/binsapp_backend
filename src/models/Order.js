@@ -110,6 +110,21 @@ const orderSchema = new mongoose.Schema(
       default: "pending",
       enum: ["pending", "accepted", "completed", "cancelled"],
     },
+    source: {
+      type: String,
+      enum: ["marketplace", "direct_lead", "commercial", "sales_agent"],
+      default: "marketplace",
+      index: true,
+    },
+    leadId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "ProviderLead",
+      default: null,
+    },
+    leadNumber: {
+      type: String,
+      default: "",
+    },
     proofOfWorkStatus: {
       type: String,
       enum: ["accepted", "rejected"],
@@ -496,6 +511,7 @@ const orderSchema = new mongoose.Schema(
     overagePerTon: { type: Number, default: null },
     overageEnforced: { type: Boolean, default: false },
     actualWeight: { type: Number, default: null },
+    scaleSlipImage: { type: String, default: null },
     weightRecordedAt: { type: Date, default: null },
     weightRecordedBy: {
       type: mongoose.Schema.Types.ObjectId,
@@ -523,6 +539,37 @@ const orderSchema = new mongoose.Schema(
       ref: "BillingRecord",
       default: null,
     },
+    surcharges: [
+      {
+        type: {
+          type: String,
+          enum: [
+            "contamination",
+            "special_item",
+            "dry_run",
+            "relocation",
+            "other",
+          ],
+          default: "other",
+        },
+        title: { type: String, required: true },
+        description: { type: String, default: "" },
+        amount: { type: Number, required: true, min: 0 },
+        images: [{ type: String }],
+        status: {
+          type: String,
+          enum: ["billed", "waived", "pending"],
+          default: "billed",
+        },
+        addedBy: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: "User",
+          default: null,
+        },
+        addedAt: { type: Date, default: Date.now },
+      },
+    ],
+    totalSurcharges: { type: Number, default: 0 },
     perDiemRateSnapshot: { type: Number, default: null },
     // Swap linkage: pickup order <-> new drop-off order
     swapRequest: {
@@ -589,5 +636,15 @@ const orderSchema = new mongoose.Schema(
 orderSchema.index({ location: "2dsphere" });
 orderSchema.index({ to_id: 1, createdAt: -1 });
 orderSchema.index({ to_id: 1, status: 1 });
+orderSchema.index({ status: 1, _id: -1 });
+orderSchema.index({ user: 1, _id: -1 });
+orderSchema.index({ to_id: 1, _id: -1 });
+orderSchema.index({ orderNumber: 1 });
+orderSchema.index({ company: 1, _id: -1 });
+orderSchema.index({ service_type: 1, _id: -1 });
+orderSchema.index({ status: 1, createdAt: -1 });
+orderSchema.index({ createdAt: -1 });
+orderSchema.index({ status: 1, updatedAt: -1 });
+orderSchema.index({ updatedAt: -1 });
 
 export default mongoose.model("Order", orderSchema);

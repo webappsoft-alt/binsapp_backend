@@ -20,6 +20,7 @@ import {
   getOrderLiveLocation,
   adminDeleteOrder,
   recordOrderWeight,
+  addOrderSurchargeController,
   updateSwapStatusRenter,
   getAdminManualReviewRequest,
   updateAdminManualReviewRequest,
@@ -27,7 +28,12 @@ import {
   getRenterReportsAnalytics,
   getRenterCustomersDirectory,
   getRenterCustomerDetail,
+  sendRenterCrmFollowupController,
   markReadyToPickup,
+  emailOrderInvoiceController,
+  sendDispatchAlertController,
+  sendTransactionInvoiceController,
+  getAdminOrderById,
 } from "./controller.js";
 import { authenticate, admin } from "../../middlewares/auth.js";
 import { validate } from "../../middlewares/validate.js";
@@ -244,6 +250,7 @@ router.get("/renter/calendar", getRenterCalendarOrders);
 router.get("/renter/reports-analytics", getRenterReportsAnalytics);
 router.get("/renter/customers-directory", getRenterCustomersDirectory);
 router.get("/renter/customers-directory/:customerId", getRenterCustomerDetail);
+router.post("/renter/crm/send-followup", sendRenterCrmFollowupController);
 
 /**
  * @swagger
@@ -956,8 +963,16 @@ router.put("/onWay/:id", updateOnItsWay);
 
 /** Operator records actual tonnage at pickup (commercial orders). */
 router.post("/renter/:id/weight", recordOrderWeight);
+/** Operator adds a fee/surcharge with photo proof. */
+router.post("/renter/:id/surcharge", addOrderSurchargeController);
 /** Operator updates swap status on a commercial order. */
 router.put("/renter/:id/swap-request", updateSwapStatusRenter);
+/** Operator sends email invoice/receipt to customer. */
+router.post("/renter/:id/email-invoice", emailOrderInvoiceController);
+/** Operator sends automated/manual dispatch notification (SMS/Push) to customer. */
+router.post("/renter/:id/dispatch-alert", sendDispatchAlertController);
+/** Provider dispatches multi-channel invoice & receipt (Email, SMS, In-App, Chat) */
+router.post("/renter/send-invoice-receipt", authenticate, sendTransactionInvoiceController);
 
 /**
  * @swagger
@@ -1052,6 +1067,7 @@ router.get("/:id/live-location", getOrderLiveLocation);
  *         $ref: '#/components/responses/ForbiddenError'
  */
 router.get("/admin", admin, adminOrder);
+router.get("/admin/:id", admin, getAdminOrderById);
 
 /**
  * @swagger

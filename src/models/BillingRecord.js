@@ -8,6 +8,7 @@ const lineItemSchema = new Schema(
         "order",
         "per_diem",
         "overage",
+        "surcharge",
         "swap",
         "adjustment",
         "builder_offer",

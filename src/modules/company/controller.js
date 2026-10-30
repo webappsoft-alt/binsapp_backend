@@ -259,3 +259,74 @@ export const updateSwapRequest = async (req, res, next) => {
     next(error);
   }
 };
+
+export const getCompanyOverview = async (req, res, next) => {
+  try {
+    let companyId = req.user.company;
+    if (!companyId) {
+      const comp = await Company.findOne({ user: req.user._id });
+      if (comp) companyId = comp._id;
+    }
+    const overview = await companyService.getCompanyOverview(
+      req.user._id,
+      companyId,
+    );
+    res.status(200).json({
+      success: true,
+      status: "success",
+      message: "Company overview metrics fetched successfully",
+      data: overview,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getCompanyRotations = async (req, res, next) => {
+  try {
+    let companyId = req.user.company;
+    if (!companyId) {
+      const comp = await Company.findOne({ user: req.user._id });
+      if (comp) companyId = comp._id;
+    }
+    const result = await companyService.getCompanyRotations(
+      req.user._id,
+      companyId,
+      req.query,
+    );
+    res.status(200).json({
+      success: true,
+      status: "success",
+      message: "Company rotations data fetched successfully",
+      data: result,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const batchCommercialRotationAction = async (req, res, next) => {
+  try {
+    let companyId = req.user.company;
+    if (!companyId) {
+      const comp = await Company.findOne({ user: req.user._id });
+      if (comp) companyId = comp._id;
+    }
+    const result = await companyService.batchCommercialRotationAction(
+      req.user._id,
+      companyId,
+      req.body,
+    );
+    res.status(200).json({
+      success: true,
+      status: "success",
+      message: "Batch rotation action executed successfully",
+      data: result,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+
+

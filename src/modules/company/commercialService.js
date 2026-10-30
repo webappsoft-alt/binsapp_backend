@@ -3,6 +3,7 @@ import BillingRecord from "../../models/BillingRecord.js";
 import Order from "../../models/Order.js";
 import Dumbster from "../../models/Dumbster.js";
 import User from "../../models/User.js";
+import TransactionModel from "../../models/Transaction.js";
 import BuilderOffer from "../../models/BuilderOffer.js";
 import BuilderOfferAllocation from "../../models/BuilderOfferAllocation.js";
 import {
@@ -22,6 +23,7 @@ import {
 import {
   createOrAppendInvoiceLine,
   billOverageToInvoice,
+  billSurchargeToInvoice,
 } from "../../utils/commercialBilling.js";
 import { notifyCommercialParties } from "../../utils/commercialNotify.js";
 import { generateOTP } from "../../utils/Generator.js";
@@ -856,12 +858,29 @@ export async function updateSwapStatus(actorId, orderId, status, { role } = {}) 
   return order;
 }
 
-export async function recordOrderWeight(operatorId, orderId, actualWeight) {
-  const order = await Order.findById(orderId).populate("user company to_id");
+export async function recordOrderWeight(
+  operatorId,
+  orderId,
+  actualWeight,
+  slipImage = null,
+) {
+  const order = await Order.findById(orderId).populate(
+    "user company to_id dumbster dustbin",
+  );
   if (!order) throw new NotFoundError("Order not found");
-  if (!order.company) {
-    throw new BadRequestError("Weight recording is for commercial orders only");
+
+  const isDumpsterService =
+    order.service_type === "Dumbster" ||
+    order.service_type === "dustbin" ||
+    Boolean(order.dumbster) ||
+    Boolean(order.dustbin) ||
+    Boolean(order.company);
+  if (!isDumpsterService) {
+    throw new BadRequestError(
+      "Weight recording is only applicable to dumpster rentals",
+    );
   }
+
   if (String(order.to_id?._id || order.to_id) !== String(operatorId)) {
     throw new ForbiddenError("Only the assigned operator can record weight");
   }
@@ -871,14 +890,32 @@ export async function recordOrderWeight(operatorId, orderId, actualWeight) {
     throw new BadRequestError("actualWeight must be a non-negative number");
   }
 
+  const includedTons =
+    order.includedTons != null
+      ? Number(order.includedTons)
+      : Number(order.dumbster?.tons || order.dustbin?.tons) || 2;
+  const overagePerTon =
+    order.overagePerTon != null
+      ? Number(order.overagePerTon)
+      : Number(order.dumbster?.overagePerTon || order.dustbin?.overagePerTon) || 85;
+  const overageEnforced =
+    order.overageEnforced !== false &&
+    (Boolean(order.overageEnforced) || overagePerTon > 0);
+
   const overage = computeOverageCharge({
     actualWeight: weight,
-    includedTons: order.includedTons,
-    overagePerTon: order.overagePerTon,
-    overageEnforced: order.overageEnforced,
+    includedTons,
+    overagePerTon,
+    overageEnforced,
   });
 
   order.actualWeight = weight;
+  if (slipImage) {
+    order.scaleSlipImage = slipImage;
+  }
+  order.includedTons = includedTons;
+  order.overagePerTon = overagePerTon;
+  order.overageEnforced = overageEnforced;
   order.weightRecordedAt = new Date();
   order.weightRecordedBy = operatorId;
   order.overageTons = overage.overageTons;
@@ -893,7 +930,7 @@ export async function recordOrderWeight(operatorId, orderId, actualWeight) {
   if (overage.billed && overage.amount > 0) {
     const paymentMethod =
       order.companyPaymentMethod || order.company?.paymentMethod || "card";
-    if (paymentMethod === "invoice") {
+    if (order.company && paymentMethod === "invoice") {
       await billOverageToInvoice({
         companyId: order.company._id || order.company,
         userId: order.user._id || order.user,
@@ -902,8 +939,24 @@ export async function recordOrderWeight(operatorId, orderId, actualWeight) {
         overageTons: overage.overageTons,
       });
     } else {
-      await User.findByIdAndUpdate(order.user._id || order.user, {
+      const customerId = order.user?._id || order.user;
+      await User.findByIdAndUpdate(customerId, {
         $inc: { balance: -overage.amount },
+      });
+      await TransactionModel.create({
+        user: customerId,
+        order: order._id,
+        amount: overage.amount,
+        type: "debit",
+        stripePaymentIntentId: null,
+        metadata: {
+          reason: `Dumpster overage tonnage fee (${overage.overageTons} tons @ $${overagePerTon}/ton)`,
+          actualWeight: weight,
+          includedTons,
+          overageTons: overage.overageTons,
+          overageAmount: overage.amount,
+          scaleSlipImage: order.scaleSlipImage || null,
+        },
       });
     }
   }
@@ -930,6 +983,7 @@ export async function recordOrderWeight(operatorId, orderId, actualWeight) {
       overageTons: overage.overageTons,
       overageAmount: overage.amount,
       overageStatus: order.overageStatus,
+      scaleSlipImage: order.scaleSlipImage || null,
     },
   });
 
@@ -948,6 +1002,118 @@ export async function recordOrderWeight(operatorId, orderId, actualWeight) {
   }
 
   return { order, overage };
+}
+
+export async function addOrderSurcharge(operatorId, orderId, {
+  type = "other",
+  title,
+  description = "",
+  amount,
+  images = [],
+}) {
+  const order = await Order.findById(orderId).populate("user company to_id");
+  if (!order) throw new NotFoundError("Order not found");
+
+  if (String(order.to_id?._id || order.to_id) !== String(operatorId)) {
+    throw new ForbiddenError("Only the assigned operator can add surcharges");
+  }
+
+  const numAmount = Number(amount);
+  if (!Number.isFinite(numAmount) || numAmount <= 0) {
+    throw new BadRequestError("Surcharge amount must be greater than 0");
+  }
+
+  if (!title || !String(title).trim()) {
+    throw new BadRequestError("Surcharge title is required");
+  }
+
+  const surchargeEntry = {
+    type: String(type || "other").toLowerCase(),
+    title: String(title).trim(),
+    description: String(description || "").trim(),
+    amount: numAmount,
+    images: Array.isArray(images)
+      ? images.filter(Boolean)
+      : images
+        ? [images]
+        : [],
+    status: "billed",
+    addedBy: operatorId,
+    addedAt: new Date(),
+  };
+
+  order.surcharges = order.surcharges || [];
+  order.surcharges.push(surchargeEntry);
+  order.totalSurcharges = (Number(order.totalSurcharges) || 0) + numAmount;
+  order.price = (Number(order.price) || 0) + numAmount;
+  await order.save();
+
+  // Billing
+  const paymentMethod =
+    order.companyPaymentMethod || order.company?.paymentMethod || "card";
+  if (order.company && paymentMethod === "invoice") {
+    await billSurchargeToInvoice({
+      companyId: order.company._id || order.company,
+      userId: order.user._id || order.user,
+      orderId: order._id,
+      amount: numAmount,
+      title: surchargeEntry.title,
+      surchargeType: surchargeEntry.type,
+      description: surchargeEntry.description,
+      metadata: {
+        images: surchargeEntry.images,
+        addedBy: operatorId,
+      },
+    });
+  } else {
+    const customerId = order.user?._id || order.user;
+    await User.findByIdAndUpdate(customerId, {
+      $inc: { balance: -numAmount },
+    });
+    await TransactionModel.create({
+      user: customerId,
+      order: order._id,
+      amount: numAmount,
+      type: "debit",
+      stripePaymentIntentId: null,
+      metadata: {
+        reason: `${surchargeEntry.title} ($${numAmount})`,
+        surchargeType: surchargeEntry.type,
+        description: surchargeEntry.description,
+        images: surchargeEntry.images,
+      },
+    });
+  }
+
+  await notifyCommercialParties({
+    actorId: operatorId,
+    customer: order.user,
+    operator: order.to_id,
+    type: "surcharge_added",
+    title: `Surcharge Added: ${surchargeEntry.title}`,
+    description: `A surcharge of $${numAmount.toFixed(2)} was charged for ${surchargeEntry.title}.`,
+    orderId: order._id.toString(),
+    metadata: {
+      action: "surcharge_added",
+      surcharge: surchargeEntry,
+    },
+  });
+
+  const io = await getIo();
+  if (io) {
+    io.to(`user_${order.user._id || order.user}`).emit("surcharge-added-rentee", {
+      success: true,
+      order,
+      surcharge: surchargeEntry,
+    });
+    io.to(`user_${operatorId}`).emit("surcharge-added-renter", {
+      success: true,
+      order,
+      surcharge: surchargeEntry,
+    });
+  }
+
+  return { order, surcharge: surchargeEntry };
 }
 
 export { assertCompanyOwner };

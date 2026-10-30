@@ -22,6 +22,9 @@ import {
   getCompanyBilling,
   createSwapRequest,
   updateSwapRequest,
+  getCompanyOverview,
+  getCompanyRotations,
+  batchCommercialRotationAction,
 } from "./controller.js";
 import { authenticate, admin } from "../../middlewares/auth.js";
 import { validate } from "../../middlewares/validate.js";
@@ -716,6 +719,21 @@ router.post("/quote", validate(quoteValidation), quoteCommercial);
  * GET /api/company/billing
  */
 router.get("/billing", getCompanyBilling);
+
+/**
+ * Company Executive Overview & Analytics.
+ * GET /api/company/overview
+ */
+router.get("/overview", getCompanyOverview);
+
+/**
+ * Company Field Rotations & Live Dispatch Kanban
+ * GET /api/company/rotations
+ * POST /api/company/rotations/batch
+ */
+router.get("/rotations", getCompanyRotations);
+router.post("/rotations/batch", batchCommercialRotationAction);
+
 
 /**
  * Swap request on an active commercial order.

@@ -33,6 +33,7 @@ import {
   updateAdminManualReviewRequests,
   deleteAdminManualReviewRequests,
   getUserByService,
+  getAdminPaymentsLedgerController,
 } from "./controller.js";
 import {
   getJunkRemovalConfig,
@@ -2083,6 +2084,19 @@ router.put(
  *         $ref: '#/components/responses/ForbiddenError'
  */
 import salesKnowledgeAdminRoutes from "../sales_agent/admin.routes.js";
+import {
+  getAdminSmsLogs,
+  sendAdminSms,
+  resendAdminSms,
+  syncAdminSmsStatus,
+} from "./smsLogs.controller.js";
+import {
+  getAdminProviderEstimates,
+  getAdminProviderEstimateById,
+  nudgeProviderForEstimate,
+} from "./providerEstimates.controller.js";
+import { getAdminLiveDispatchRadar } from "./dispatchRadar.controller.js";
+import { getAdminReports } from "./reports.controller.js";
 
 router.get("/get-user-by-service", authenticate, admin, getUserByService);
 
@@ -2090,4 +2104,25 @@ router.get("/get-user-by-service", authenticate, admin, getUserByService);
 router.use("/sales-agent", salesKnowledgeAdminRoutes);
 router.use("/sales-agent/knowledge", salesKnowledgeAdminRoutes);
 
+// CRM & Oversight: SMS Delivery Logs & Twilio Tracking
+router.get("/sms-logs", authenticate, admin, getAdminSmsLogs);
+router.post("/sms-logs/send", authenticate, admin, sendAdminSms);
+router.post("/sms-logs/:id/resend", authenticate, admin, resendAdminSms);
+router.get("/sms-logs/:id/sync", authenticate, admin, syncAdminSmsStatus);
+
+// CRM & Oversight: Provider Direct Leads & Estimates
+router.get("/provider-estimates", authenticate, admin, getAdminProviderEstimates);
+router.get("/provider-estimates/:id", authenticate, admin, getAdminProviderEstimateById);
+router.post("/provider-estimates/:id/nudge", authenticate, admin, nudgeProviderForEstimate);
+
+// Operations: Live Dispatch Radar
+router.get("/live-dispatch-radar", authenticate, admin, getAdminLiveDispatchRadar);
+
+// Financials: Payments Ledger & Platform Revenue Oversight
+router.get("/financials/payments", authenticate, admin, getAdminPaymentsLedgerController);
+
+// Executive Intelligence & Comprehensive Reports
+router.get("/reports", authenticate, admin, getAdminReports);
+
 export default router;
+

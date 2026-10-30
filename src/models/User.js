@@ -247,6 +247,11 @@ const userSchema = new mongoose.Schema(
 
 userSchema.index({ location: "2dsphere" });
 userSchema.index({ currentLocation: "2dsphere" });
+userSchema.index({ role: 1, createdAt: -1 });
+userSchema.index({ email: 1 });
+userSchema.index({ comp_name: 1 });
+userSchema.index({ name: 1 });
+userSchema.index({ company: 1 });
 
 userSchema.pre("save", function () {
   // Ensure location and currentLocation formatting

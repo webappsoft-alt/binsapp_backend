@@ -1498,6 +1498,35 @@ export const initSocket = (server) => {
                 }
               : {}),
           };
+          let orderTonnageFields = {};
+          if (commercialQuote) {
+            orderTonnageFields = {
+              commercialSize: commercialQuote.size,
+              includedTons: commercialQuote.tonnage.includedTons,
+              overagePerTon: commercialQuote.tonnage.overagePerTon,
+              overageEnforced: commercialQuote.tonnage.overageEnforced,
+              perDiemRateSnapshot: commercialQuote.breakdown.perDiemRate,
+              companyPaymentMethod: companyPaymentMethod,
+            };
+          } else if (service_type === "Dumbster" || service_type === "dustbin") {
+            const dId = dumbsterId || null;
+            let catalogD = null;
+            if (dId && isValidObjectId(dId)) {
+              catalogD = await Dumbster.findById(dId).lean();
+            }
+            const incTons =
+              Number(catalogD?.tons) > 0 ? Number(catalogD.tons) : 2;
+            const ovrRate =
+              Number(catalogD?.overagePerTon) > 0
+                ? Number(catalogD.overagePerTon)
+                : 85;
+            orderTonnageFields = {
+              includedTons: incTons,
+              overagePerTon: ovrRate,
+              overageEnforced: ovrRate > 0,
+            };
+          }
+
           const newRequest = await Order.create({
             user: senderId,
             dumbster: dumbsterId || commercialQuote?.dumbsterId || null,
@@ -1547,16 +1576,7 @@ export const initSocket = (server) => {
             payment_type: resolvedPaymentType,
             driveaway: driveaway || false,
             cancelation: cancelation || false,
-            ...(commercialQuote
-              ? {
-                  commercialSize: commercialQuote.size,
-                  includedTons: commercialQuote.tonnage.includedTons,
-                  overagePerTon: commercialQuote.tonnage.overagePerTon,
-                  overageEnforced: commercialQuote.tonnage.overageEnforced,
-                  perDiemRateSnapshot: commercialQuote.breakdown.perDiemRate,
-                  companyPaymentMethod: companyPaymentMethod,
-                }
-              : {}),
+            ...orderTonnageFields,
           });
 
           if (resolvedPaymentType === "invoice" && resolvedCompanyId) {
@@ -1967,6 +1987,9 @@ export const initSocket = (server) => {
             payment_type: resolvedPaymentType,
             driveaway: resolvedDriveaway,
             cancelation: resolvedCancelation,
+            includedTons: priorOrder.includedTons ?? null,
+            overagePerTon: priorOrder.overagePerTon ?? null,
+            overageEnforced: priorOrder.overageEnforced ?? false,
             status: "pending",
             to_id: null,
           });
@@ -4041,8 +4064,8 @@ export const initSocket = (server) => {
             orderDeatil: updatedSession,
             ...timelineEntry(dropCopy),
           });
-          const customerLink = `https://api.binsapp.ai/customer-orders?orderId=${updatedSession._id}`;
-          const ownerLink = `https://api.binsapp.ai/owner-orders?orderId=${updatedSession._id}`;
+          const customerLink = `https://binsapp.ai/rentee/orders?orderId=${updatedSession._id}`;
+          const ownerLink = `https://binsapp.ai/renter/my-orders?orderId=${updatedSession._id}`;
 
           const adminUser = await User.findOne({
             $or: [{ type: "admin" }, { role: "admin" }],
@@ -4059,7 +4082,7 @@ export const initSocket = (server) => {
               title: dropCopy.customer.title,
               fcmtoken: updatedSession.user.fcmtoken,
               order: updatedSession._id.toString(),
-              noti: false,
+              noti: true,
               email: updatedSession.user?.email || "",
               customEmailTemplate: true,
               html: buttonTemplate(
@@ -4076,7 +4099,7 @@ export const initSocket = (server) => {
               title: dropCopy.operator.title,
               fcmtoken: updatedSession.to_id.fcmtoken,
               order: updatedSession._id.toString(),
-              noti: false,
+              noti: true,
               email: updatedSession.to_id?.email || "",
               customEmailTemplate: true,
               html: buttonTemplate(
@@ -4086,6 +4109,22 @@ export const initSocket = (server) => {
               ),
             }),
           ];
+
+          // Automated Multi-Channel Dispatch Alert (SMS with Photo Link + Push)
+          try {
+            const { sendDispatchAlertToCustomer } = await import(
+              "../utils/dispatchAlertService.js"
+            );
+            const proofLink = `https://binsapp.ai/orders/track?orderId=${updatedSession._id}`;
+            sendDispatchAlertToCustomer({
+              order: updatedSession,
+              alertType: "dropoff_done",
+              actionLink: proofLink,
+              senderId,
+            }).catch((e) => logger.warn("Dropoff SMS/Alert dispatch warning:", e));
+          } catch (importErr) {
+            logger.warn("Could not import dispatchAlertService in socket:", importErr);
+          }
 
           if (adminUser) {
             io.to(`user_${adminUser._id.toString()}`).emit("admin-noti", {

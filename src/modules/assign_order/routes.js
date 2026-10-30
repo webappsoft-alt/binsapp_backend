@@ -21,6 +21,7 @@ import {
   getAssignySubUser,
   getDriverJobDetails,
   getOperatorDrivers,
+  getOperatorDriverDetails,
   getOperatorLiveDashboard,
   getSubusers,
   reportPickupIssue,
@@ -157,6 +158,7 @@ router.post(
 // OPERATOR DRIVER MANAGEMENT & DISPATCH (Owner/Operator)
 // ==========================================
 router.get("/operator/drivers", authenticate, getOperatorDrivers);
+router.get("/operator/drivers/:id/details", authenticate, getOperatorDriverDetails);
 router.post("/operator/drivers", authenticate, addOperatorDriver);
 router.delete("/operator/drivers/:id", authenticate, deleteOperatorDriver);
 router.post("/operator/send-driver-invite", authenticate, sendDriverInvite);

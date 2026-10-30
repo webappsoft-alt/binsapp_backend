@@ -9,6 +9,7 @@ import {
 } from "../../utils/apiError.js";
 import { generateAccessToken } from "../../utils/Generator.js";
 import Transaction from "../../models/Transaction.js";
+import Order from "../../models/Order.js";
 
 const stripe = new Stripe(config.get("stripe.secretKey"));
 class PaymentService {
@@ -239,16 +240,176 @@ class PaymentService {
       throw error;
     }
   }
-  async getTransactions(query, { page = 1, limit = 10 }) {
+  async getTransactions(query, options = {}) {
+    const {
+      page = 1,
+      limit = 10,
+      search = '',
+      minAmount = null,
+      maxAmount = null,
+      filter = '',
+      status = '',
+      sort = '',
+    } = options;
+
     try {
       const user = await User.findById(query.user);
       if (!user) {
         throw new NotFoundError("User not found");
       }
-      const offset = (page - 1) * limit;
-      const transactions = await Transaction.find({
-        ...query,
-      })
+
+      const parsedPage = Math.max(1, parseInt(page, 10) || 1);
+      const parsedLimit = Math.max(1, parseInt(limit, 10) || 10);
+      const offset = (parsedPage - 1) * parsedLimit;
+
+      const filterConditions = [];
+
+      // Base user constraint
+      filterConditions.push({ user: query.user });
+
+      // Type constraint (credit / debit)
+      if (query.type) {
+        filterConditions.push({ type: query.type });
+      }
+
+      // Date constraints
+      if (query.createdAt) {
+        filterConditions.push({ createdAt: query.createdAt });
+      }
+
+      // High value / minAmount filter ($500+)
+      const effectiveMin =
+        minAmount != null && minAmount !== ''
+          ? Number(minAmount)
+          : filter === 'high'
+          ? 500
+          : null;
+
+      if (effectiveMin !== null && !isNaN(effectiveMin)) {
+        const highOrders = await Order.find({
+          $or: [
+            { amount: { $gte: effectiveMin } },
+            { price: { $gte: effectiveMin } },
+          ],
+        }).select('_id');
+        const highOrderIds = highOrders.map((o) => o._id);
+
+        filterConditions.push({
+          $or: [
+            { amount: { $gte: effectiveMin } },
+            { order: { $in: highOrderIds } },
+            { 'metadata.total_price': { $gte: effectiveMin } },
+          ],
+        });
+      }
+
+      // Max amount filter
+      if (maxAmount != null && maxAmount !== '' && !isNaN(Number(maxAmount))) {
+        filterConditions.push({ amount: { $lte: Number(maxAmount) } });
+      }
+
+      // Payment status filter (settled, pending, overdue_fee, refunded, failed)
+      if (status && status !== 'all') {
+        const s = String(status).toLowerCase();
+        if (s === 'overdue_fee' || s === 'debit') {
+          filterConditions.push({ type: 'debit' });
+        } else if (s === 'refunded') {
+          const refundedOrders = await Order.find({
+            $or: [{ refunded: true }, { status: 'refunded' }],
+          }).select('_id');
+          const refundedOrderIds = refundedOrders.map((o) => o._id);
+          filterConditions.push({
+            $or: [
+              { order: { $in: refundedOrderIds } },
+              { 'metadata.refunded': true },
+              { 'metadata.status': 'refunded' },
+            ],
+          });
+        } else if (s === 'failed') {
+          const failedOrders = await Order.find({
+            status: 'cancelled',
+          }).select('_id');
+          const failedOrderIds = failedOrders.map((o) => o._id);
+          filterConditions.push({
+            $or: [
+              { order: { $in: failedOrderIds } },
+              { 'metadata.status': { $in: ['failed', 'canceled', 'cancelled'] } },
+            ],
+          });
+        } else if (s === 'pending') {
+          const pendingOrders = await Order.find({
+            $or: [
+              { status: { $in: ['pending', 'accepted'] } },
+              { transfer: false },
+              { paymentId: 'pending' },
+            ],
+          }).select('_id');
+          const pendingOrderIds = pendingOrders.map((o) => o._id);
+          filterConditions.push({
+            $or: [
+              { order: { $in: pendingOrderIds } },
+              { 'metadata.status': 'pending' },
+              { 'metadata.paymentHoldStatus': { $in: ['hold', 'authorized', 'wallet_reserved'] } },
+            ],
+          });
+        } else if (s === 'settled' || s === 'paid' || s === 'completed') {
+          filterConditions.push({
+            type: 'credit',
+            $or: [
+              { 'metadata.status': 'succeeded' },
+              { 'metadata.status': { $exists: false } },
+            ],
+          });
+        }
+      }
+
+      // Search constraint (order number, address, user name, phone, reason, stripe id)
+      if (search && typeof search === 'string' && search.trim()) {
+        const s = search.trim();
+        const matchingOrders = await Order.find({
+          $or: [
+            { orderNumber: { $regex: s, $options: 'i' } },
+            { address: { $regex: s, $options: 'i' } },
+          ],
+        }).select('_id');
+        const orderIds = matchingOrders.map((o) => o._id);
+
+        const matchingUsers = await User.find({
+          $or: [
+            { name: { $regex: s, $options: 'i' } },
+            { email: { $regex: s, $options: 'i' } },
+            { phone: { $regex: s, $options: 'i' } },
+          ],
+        }).select('_id');
+        const userIds = matchingUsers.map((u) => u._id);
+
+        filterConditions.push({
+          $or: [
+            { stripePaymentIntentId: { $regex: s, $options: 'i' } },
+            { 'metadata.reason': { $regex: s, $options: 'i' } },
+            { order: { $in: orderIds } },
+            { user: { $in: userIds } },
+          ],
+        });
+      }
+
+      const finalQuery =
+        filterConditions.length > 1
+          ? { $and: filterConditions }
+          : filterConditions[0] || {};
+
+      let sortCriteria = { createdAt: -1 };
+      if (sort === 'oldest' || sort === 'date_asc') {
+        sortCriteria = { createdAt: 1 };
+      } else if (sort === 'amount_desc' || sort === 'high_amount') {
+        sortCriteria = { amount: -1 };
+      } else if (sort === 'amount_asc' || sort === 'low_amount') {
+        sortCriteria = { amount: 1 };
+      } else if (sort === 'newest' || sort === 'date_desc') {
+        sortCriteria = { createdAt: -1 };
+      }
+
+      const transactions = await Transaction.find(finalQuery)
         .populate([
           {
             path: "order",
@@ -258,20 +419,18 @@ class PaymentService {
           },
           "user",
         ])
-        .sort({ createdAt: -1 })
-        .limit(limit)
+        .sort(sortCriteria)
+        .limit(parsedLimit)
         .skip(offset);
-      const total = await Transaction.countDocuments({
-        ...query,
-      });
 
-      const totalPages = Math.ceil(total / limit);
+      const total = await Transaction.countDocuments(finalQuery);
+      const totalPages = Math.ceil(total / parsedLimit);
 
       return {
         transactions,
         total,
-        page,
-        limit,
+        page: parsedPage,
+        limit: parsedLimit,
         totalPages,
         CurrentBalance: user.balance,
       };

@@ -141,11 +141,24 @@ export const createTransactionController = async (req, res, next) => {
 export const getTransactionsController = async (req, res, next) => {
   try {
     const user = req.user._id;
-    const { page, limit, type, beforeDate, afterDate } = req.query;
+    const {
+      page,
+      limit,
+      type,
+      beforeDate,
+      afterDate,
+      minAmount,
+      maxAmount,
+      search,
+      filter,
+      status,
+      sort,
+    } = req.query;
+
     const query = {
       user,
-    }
-    if (type) {
+    };
+    if (type && type !== 'all') {
       query.type = type;
     }
     if (beforeDate) {
@@ -154,7 +167,17 @@ export const getTransactionsController = async (req, res, next) => {
     if (afterDate) {
       query.createdAt = { $gte: new Date(afterDate) };
     }
-    const transactions = await paymentController.getTransactions(query, { page, limit });
+
+    const transactions = await paymentController.getTransactions(query, {
+      page,
+      limit,
+      search,
+      minAmount,
+      maxAmount,
+      filter,
+      status,
+      sort,
+    });
     res.status(200).json({
       success: true,
       message: "Transactions fetched successfully",

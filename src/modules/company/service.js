@@ -412,6 +412,516 @@ class CompanyService {
       throw error;
     }
   }
+
+  async getCompanyOverview(userId, companyId) {
+    try {
+      const mongoose = await import("mongoose");
+      const userObjectId = new mongoose.default.Types.ObjectId(String(userId));
+      const companyObjectId = companyId
+        ? new mongoose.default.Types.ObjectId(String(companyId))
+        : null;
+
+      // 1. Fetch Company Record
+      let company = null;
+      if (companyObjectId) {
+        company = await this.Company.findById(companyObjectId).lean();
+      }
+      if (!company) {
+        company = await this.Company.findOne({ user: userObjectId }).lean();
+      }
+
+      const monthlyBudget = Number(company?.expectedMonthlyVolume || 0);
+      const creditLimit = Number(company?.invoiceTerms?.creditLimit || 0);
+
+      // 2. Build match condition for Orders
+      const orderOr = [{ user: userObjectId }];
+      if (company?._id) {
+        orderOr.push({ company: company._id });
+      }
+      const matchCriteria = {
+        $or: orderOr,
+        status: { $ne: "cancelled" },
+      };
+
+      const now = new Date();
+      const currentMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+      const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+
+      // 3. Faceted MongoDB Aggregation for all KPI numbers, spend, & status counts
+      const [analyticsResult] = await this.Order.aggregate([
+        { $match: matchCriteria },
+        {
+          $facet: {
+            financials: [
+              {
+                $group: {
+                  _id: null,
+                  allTimeSpend: {
+                    $sum: { $ifNull: ["$total_price", { $ifNull: ["$price", 0] }] },
+                  },
+                  thisMonthSpend: {
+                    $sum: {
+                      $cond: [
+                        { $gte: ["$createdAt", currentMonthStart] },
+                        { $ifNull: ["$total_price", { $ifNull: ["$price", 0] }] },
+                        0,
+                      ],
+                    },
+                  },
+                  lastMonthSpend: {
+                    $sum: {
+                      $cond: [
+                        {
+                          $and: [
+                            { $gte: ["$createdAt", lastMonthStart] },
+                            { $lt: ["$createdAt", currentMonthStart] },
+                          ],
+                        },
+                        { $ifNull: ["$total_price", { $ifNull: ["$price", 0] }] },
+                        0,
+                      ],
+                    },
+                  },
+                  totalTons: {
+                    $sum: {
+                      $ifNull: [
+                        "$actualWeight",
+                        { $ifNull: ["$includedTons", 0] },
+                      ],
+                    },
+                  },
+                  totalOrdersCount: { $sum: 1 },
+                },
+              },
+            ],
+            statusCounts: [
+              {
+                $group: {
+                  _id: null,
+                  activeUnitsCount: {
+                    $sum: {
+                      $cond: [
+                        {
+                          $and: [
+                            { $eq: ["$status", "accepted"] },
+                            {
+                              $in: [
+                                "$service_type",
+                                ["Dumbster", "Porta Potty"],
+                              ],
+                            },
+                          ],
+                        },
+                        1,
+                        0,
+                      ],
+                    },
+                  },
+                  pickupReadyCount: {
+                    $sum: {
+                      $cond: [
+                        {
+                          $and: [
+                            { $eq: ["$status", "accepted"] },
+                            { $eq: ["$readyToPickup", true] },
+                          ],
+                        },
+                        1,
+                        0,
+                      ],
+                    },
+                  },
+                  pendingSwapCount: {
+                    $sum: {
+                      $cond: [
+                        {
+                          $in: [
+                            "$swapRequest.status",
+                            ["requested", "accepted", "dispatched"],
+                          ],
+                        },
+                        1,
+                        0,
+                      ],
+                    },
+                  },
+                  upcomingDeliveriesCount: {
+                    $sum: {
+                      $cond: [
+                        {
+                          $or: [
+                            { $eq: ["$status", "pending"] },
+                            {
+                              $and: [
+                                { $eq: ["$status", "accepted"] },
+                                { $gt: ["$start_date", now] },
+                              ],
+                            },
+                          ],
+                        },
+                        1,
+                        0,
+                      ],
+                    },
+                  },
+                },
+              },
+            ],
+            projectAllocations: [
+              {
+                $group: {
+                  _id: "$jobSite",
+                  totalSpend: {
+                    $sum: { $ifNull: ["$total_price", { $ifNull: ["$price", 0] }] },
+                  },
+                  orderCount: { $sum: 1 },
+                  activeCount: {
+                    $sum: {
+                      $cond: [{ $eq: ["$status", "accepted"] }, 1, 0],
+                    },
+                  },
+                },
+              },
+            ],
+          },
+        },
+      ]);
+
+      const fin = analyticsResult?.financials?.[0] || {};
+      const counts = analyticsResult?.statusCounts?.[0] || {};
+      const rawProjectAllocations = analyticsResult?.projectAllocations || [];
+
+      const thisMonthSpend = fin.thisMonthSpend || 0;
+      const budgetPct =
+        monthlyBudget > 0
+          ? Math.min(100, Math.round((thisMonthSpend / monthlyBudget) * 100))
+          : 0;
+
+      // 4. Fetch all user/company JobSites to merge project allocations
+      const siteQuery = company?._id
+        ? { $or: [{ user: userObjectId }, { company: company._id }] }
+        : { user: userObjectId };
+      const allJobSites = await this.JobSite.find(siteQuery).lean();
+
+      const siteMap = new Map();
+      allJobSites.forEach((s) => {
+        siteMap.set(String(s._id), s);
+      });
+
+      const projectBreakdown = [];
+      const accountedSiteIds = new Set();
+
+      rawProjectAllocations.forEach((item) => {
+        const sId = item._id ? String(item._id) : null;
+        if (sId && siteMap.has(sId)) {
+          accountedSiteIds.add(sId);
+          const site = siteMap.get(sId);
+          projectBreakdown.push({
+            jobSiteId: sId,
+            name: site.projectName || site.siteName || "General Project",
+            siteName: site.siteName,
+            address: site.address,
+            poNumber: site.poNumber || "—",
+            costCode: site.costCode || "—",
+            totalSpend: item.totalSpend || 0,
+            activeCount: item.activeCount || 0,
+            orderCount: item.orderCount || 0,
+          });
+        } else if (item.totalSpend > 0) {
+          projectBreakdown.push({
+            jobSiteId: null,
+            name: "Unassigned Orders",
+            siteName: "Direct Site Orders",
+            address: "—",
+            poNumber: "—",
+            costCode: "—",
+            totalSpend: item.totalSpend || 0,
+            activeCount: item.activeCount || 0,
+            orderCount: item.orderCount || 0,
+          });
+        }
+      });
+
+      // Add remaining registered jobsites that have 0 spend so far
+      allJobSites.forEach((site) => {
+        const sId = String(site._id);
+        if (!accountedSiteIds.has(sId)) {
+          projectBreakdown.push({
+            jobSiteId: sId,
+            name: site.projectName || site.siteName || "New Project",
+            siteName: site.siteName,
+            address: site.address,
+            poNumber: site.poNumber || "—",
+            costCode: site.costCode || "—",
+            totalSpend: 0,
+            activeCount: 0,
+            orderCount: 0,
+          });
+        }
+      });
+
+      // Sort project breakdown by total spend descending
+      projectBreakdown.sort((a, b) => b.totalSpend - a.totalSpend);
+
+      // 5. Active Equipment Query (Top 6 deployed)
+      const activeEquipment = await this.Order.find({
+        ...matchCriteria,
+        status: "accepted",
+        service_type: { $in: ["Dumbster", "Porta Potty"] },
+      })
+        .populate("dumbster")
+        .populate("portaPotty")
+        .populate("jobSite")
+        .sort({ createdAt: -1 })
+        .limit(6)
+        .lean();
+
+      // 6. Upcoming Deliveries Query (Top 5 scheduled)
+      const upcomingDeliveries = await this.Order.find({
+        ...matchCriteria,
+        $or: [
+          { status: "pending" },
+          { status: "accepted", start_date: { $gte: now } },
+        ],
+      })
+        .populate("dumbster")
+        .populate("jobSite")
+        .sort({ start_date: 1 })
+        .limit(5)
+        .lean();
+
+      return {
+        company: {
+          id: company?._id || null,
+          name:
+            company?.companyName ||
+            company?.legalBusinessName ||
+            "Commercial Operations",
+          status: company?.status || "approved",
+          isApproved: (company?.status || "approved") === "approved",
+          monthlyBudget,
+          creditLimit,
+        },
+        financials: {
+          thisMonthSpend,
+          lastMonthSpend: fin.lastMonthSpend || 0,
+          allTimeSpend: fin.allTimeSpend || 0,
+          monthlyBudget,
+          budgetPct,
+          totalTonsEstimated: fin.totalTons || 0,
+        },
+        counts: {
+          activeUnits: counts.activeUnitsCount || 0,
+          pickupReady: counts.pickupReadyCount || 0,
+          pendingSwaps: counts.pendingSwapCount || 0,
+          upcomingDeliveries: counts.upcomingDeliveriesCount || 0,
+          totalOrders: fin.totalOrdersCount || 0,
+          totalJobSites: allJobSites.length,
+        },
+        projectBreakdown,
+        activeEquipment,
+        upcomingDeliveries,
+      };
+    } catch (error) {
+      this.logger.error("Error in getCompanyOverview:", error);
+      throw error;
+    }
+  }
+
+  async getCompanyRotations(userId, companyId, query = {}) {
+    try {
+      const mongoose = await import("mongoose");
+      const userObjectId = new mongoose.default.Types.ObjectId(String(userId));
+      const companyObjectId = companyId
+        ? new mongoose.default.Types.ObjectId(String(companyId))
+        : null;
+
+      const orderOr = [{ user: userObjectId }];
+      if (companyObjectId) {
+        orderOr.push({ company: companyObjectId });
+      }
+
+      const match = {
+        $or: orderOr,
+        service_type: { $in: ["Dumbster", "Porta Potty"] },
+      };
+
+      if (query.jobsiteId) {
+        match.jobSite = new mongoose.default.Types.ObjectId(String(query.jobsiteId));
+      }
+      if (query.serviceType && query.serviceType !== "all") {
+        match.service_type = query.serviceType === "porta" ? "Porta Potty" : "Dumbster";
+      }
+
+      // Fetch all relevant orders with populated references
+      const orders = await this.Order.find(match)
+        .populate("dumbster")
+        .populate("portaPotty")
+        .populate("jobSite")
+        .populate("to_id", "name comp_name phone email image")
+        .populate("swapRequest.linkedDropoffOrder")
+        .populate("swapRequest.linkedPickupOrder")
+        .sort({ updatedAt: -1, createdAt: -1 })
+        .limit(150)
+        .lean();
+
+      // Fetch all jobsites for filtering dropdown
+      const siteQuery = companyObjectId
+        ? { $or: [{ user: userObjectId }, { company: companyObjectId }] }
+        : { user: userObjectId };
+      const jobSites = await this.JobSite.find(siteQuery).lean();
+
+      const now = new Date();
+      const twoDaysFromNow = new Date(now.getTime() + 48 * 60 * 60 * 1000);
+
+      const columns = {
+        requested: [],    // Pending dispatch / not yet on the way
+        dispatched: [],   // Driver on the way / en route
+        active: [],       // Deployed on site, running rental
+        swapping: [],     // Swap in progress
+        pickup_ready: [], // Ready for final haul away
+        completed: [],    // Completed recently
+      };
+
+      let expiringSoonCount = 0;
+      const activeJobsiteIds = new Set();
+
+      orders.forEach((order) => {
+        const status = (order.status || "").toLowerCase();
+        const swapStatus = order.swapRequest?.status || "none";
+        const isSwapping = ["requested", "accepted", "dispatched"].includes(swapStatus);
+        const isPickupReady = order.readyToPickup === true && status !== "completed";
+        const isOnWay = Boolean(order.onway || order.deliveryWorkflow?.enRouteAt);
+
+        if (order.jobSite?._id) {
+          activeJobsiteIds.add(String(order.jobSite._id));
+        }
+
+        // Check if rental expiring soon
+        if (order.rental_end_date && status === "accepted") {
+          const endDate = new Date(order.rental_end_date);
+          if (endDate <= twoDaysFromNow && endDate >= now) {
+            expiringSoonCount += 1;
+            order.isExpiringSoon = true;
+          }
+        }
+
+        if (status === "cancelled") {
+          return; // omit cancelled
+        }
+
+        if (status === "completed") {
+          if (columns.completed.length < 15) {
+            columns.completed.push(order);
+          }
+          return;
+        }
+
+        if (isSwapping) {
+          columns.swapping.push(order);
+          return;
+        }
+
+        if (isPickupReady) {
+          columns.pickup_ready.push(order);
+          return;
+        }
+
+        if (isOnWay) {
+          columns.dispatched.push(order);
+          return;
+        }
+
+        if (status === "accepted") {
+          columns.active.push(order);
+          return;
+        }
+
+        if (status === "pending") {
+          columns.requested.push(order);
+          return;
+        }
+
+        // fallback to active
+        columns.active.push(order);
+      });
+
+      const summary = {
+        totalOrders: orders.length,
+        totalActiveOnSite: columns.active.length,
+        totalSwapping: columns.swapping.length,
+        totalPickupReady: columns.pickup_ready.length,
+        totalDispatched: columns.dispatched.length,
+        totalRequested: columns.requested.length,
+        expiringSoonCount,
+        activeJobsitesCount: activeJobsiteIds.size,
+        totalRegisteredSites: jobSites.length,
+      };
+
+      return {
+        summary,
+        columns,
+        jobSites: jobSites.map((s) => ({
+          _id: s._id,
+          siteName: s.siteName,
+          projectName: s.projectName,
+          address: s.address,
+          poNumber: s.poNumber,
+          costCode: s.costCode,
+        })),
+      };
+    } catch (error) {
+      this.logger.error("Error in getCompanyRotations:", error);
+      throw error;
+    }
+  }
+
+  async batchCommercialRotationAction(userId, companyId, { action, orderIds = [], payload = {} }) {
+    try {
+      if (!Array.isArray(orderIds) || orderIds.length === 0) {
+        throw new this.BadRequestError("No order IDs provided for batch action");
+      }
+
+      const results = [];
+      const errors = [];
+
+      for (const orderId of orderIds) {
+        try {
+          const order = await this.Order.findById(orderId);
+          if (!order) {
+            errors.push({ orderId, error: "Order not found" });
+            continue;
+          }
+
+          if (action === "batch_pickup") {
+            order.readyToPickup = true;
+            await order.save();
+            results.push({ orderId, status: "marked_pickup_ready" });
+          } else if (action === "batch_swap") {
+            const { createSwapRequest } = await import("./commercialService.js");
+            const res = await createSwapRequest(userId, orderId, payload);
+            results.push({ orderId, status: "swap_requested", data: res });
+          } else {
+            throw new this.BadRequestError(`Unknown batch action: ${action}`);
+          }
+        } catch (err) {
+          errors.push({ orderId, error: err.message });
+        }
+      }
+
+      return {
+        success: true,
+        action,
+        processedCount: results.length,
+        errorCount: errors.length,
+        results,
+        errors,
+      };
+    } catch (error) {
+      this.logger.error("Error in batchCommercialRotationAction:", error);
+      throw error;
+    }
+  }
 }
 
 const companyService = new CompanyService();

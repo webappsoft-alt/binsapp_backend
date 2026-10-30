@@ -19,6 +19,8 @@ import leadsRoutes from "./leads/routes.js";
 import growthRoutes from "./growth/routes.js";
 import publicReviewRoutes from "./public_reviews/routes.js";
 import publicSalesAgentRoutes from "./sales_agent/public.routes.js";
+import binsProvidersRoutes from "./bins_providers/routes.js";
+import providerLeadsRoutes from "./provider_leads/routes.js";
 import builderOfferRoutes, {
   companyBuilderOfferRouter,
   adminBuilderOfferRouter,
@@ -199,6 +201,10 @@ app.use("/leads", leadsRoutes);
 app.use("/growth", growthRoutes);
 app.use("/public-reviews", publicReviewRoutes);
 app.use("/sales-agent", publicSalesAgentRoutes);
+app.use("/public/bins-providers", binsProvidersRoutes);
+app.use("/bins-providers", binsProvidersRoutes);
+app.use("/public/provider-leads", providerLeadsRoutes);
+app.use("/provider-leads", providerLeadsRoutes);
 // Image Uploading & HEIC Conversion
 const HEIC_FTYP_BRANDS = new Set([
   "heic",

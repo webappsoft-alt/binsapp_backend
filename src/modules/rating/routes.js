@@ -5,6 +5,7 @@ import {
   getAdminRatings,
   getOrderRating,
   getALLRatings,
+  deleteRating,
 } from "./controller.js";
 import { authenticate, admin } from "../../middlewares/auth.js";
 import { validate } from "../../middlewares/validate.js";
@@ -273,6 +274,8 @@ router.get("/all", getUserRatings);
  *         description: Internal server error
  */
 router.get("/:userId", getUserRatings);
+
+router.delete("/:id", deleteRating);
 
 /**
  * @swagger

@@ -187,28 +187,28 @@ class adminService {
           ? totalQuantityResult[0].totalQuantity
           : 0;
 
-      const totalOrder = await Order.find({ status: "completed" });
+      const totalOrder = await Order.find({ status: "completed" })
+        .select("price amount status createdAt")
+        .lean();
 
       const thismothOrder = await Order.find({
         createdAt: { $gte: startMonth, $lte: todayEnd },
         status: "completed",
       })
-        .select("status createdAt price")
+        .select("status createdAt price amount")
         .lean();
 
-      const now = new Date();
-      let dates = [];
-      for (let i = 0; i < 12; i++) {
-        let date = new Date(now);
-        date.setMonth(now.getMonth() - i);
-        dates.unshift(date.toISOString());
+      const dates = [];
+      for (let i = 11; i >= 0; i--) {
+        dates.push(moment().subtract(i, "months").startOf("month").toISOString());
       }
 
+      const graphStartDate = moment().subtract(11, "months").startOf("month").toDate();
       const orders = await Order.find({
-        createdAt: { $gte: startDate, $lte: todayEnd },
+        createdAt: { $gte: graphStartDate, $lte: todayEnd },
         status: "completed",
       })
-        .select("status createdAt price")
+        .select("status createdAt price amount")
         .lean();
 
       // Initialize the graph array
@@ -219,9 +219,9 @@ class adminService {
         const index = this.findDateIndex(order.createdAt, dates);
         if (index !== -1 && index < graph.length) {
           graph[index].y += 1;
-          graph[index].price = Number(
-            Number(graph[index].price) + Number(order?.price || 0),
-          ).toFixed(0);
+          graph[index].price = Math.round(
+            Number(graph[index].price) + Number(order?.price || order?.amount || 0)
+          );
         }
       });
 
@@ -342,16 +342,8 @@ class adminService {
     }
   }
   findDateIndex(createdAt, dates) {
-    for (let i = 0; i < dates.length - 1; i++) {
-      if (moment(createdAt).isBetween(dates[i], dates[i + 1], null, "[)")) {
-        return i + 1; // Increment y value of the next date
-      }
-    }
-    // If the date is after the last date in the array
-    if (moment(createdAt).isSameOrAfter(dates[dates.length - 1])) {
-      return dates.length - 1;
-    }
-    return -1;
+    const m = moment(createdAt);
+    return dates.findIndex((d) => m.isSame(d, "month") && m.isSame(d, "year"));
   }
   async sendNotifications(userId, data, query, supportId) {
     try {
@@ -1377,6 +1369,257 @@ class adminService {
       logger.error("getUserbyService in adminService failed", error);
       throw error;
     }
+  }
+
+  async getAdminPaymentsLedger(options = {}) {
+    const {
+      page = 1,
+      limit = 15,
+      status = 'all',
+      search = '',
+      serviceType,
+      service_type,
+      startDate,
+      endDate,
+    } = options;
+
+    const parsedPage = Math.max(1, parseInt(page, 10) || 1);
+    const parsedLimit = Math.max(1, parseInt(limit, 10) || 15);
+    const skip = (parsedPage - 1) * parsedLimit;
+
+    const andConditions = [];
+
+    // Status filter
+    if (status === 'in_process') {
+      andConditions.push({ status: { $in: ['pending', 'accepted'] }, refunded: { $ne: true } });
+    } else if (status === 'on_hold') {
+      andConditions.push({ status: 'completed', transfer: { $ne: true }, refunded: { $ne: true } });
+    } else if (status === 'released') {
+      andConditions.push({ status: 'completed', transfer: true, refunded: { $ne: true } });
+    } else if (status === 'refunded') {
+      andConditions.push({ $or: [{ status: 'cancelled' }, { refunded: true }] });
+    }
+
+    // Service Type filter
+    const activeService = (service_type || serviceType || '').toLowerCase().trim();
+    if (activeService && activeService !== 'all') {
+      if (activeService.includes('porta') || activeService.includes('potty')) {
+        andConditions.push({
+          $or: [
+            { service_type: { $regex: /porta/i } },
+            { category: { $regex: /porta/i } },
+          ],
+        });
+      } else if (activeService.includes('junk')) {
+        andConditions.push({
+          $or: [
+            { service_type: { $regex: /junk/i } },
+            { category: { $regex: /junk/i } },
+          ],
+        });
+      } else if (activeService.includes('tree')) {
+        andConditions.push({
+          $or: [
+            { service_type: { $regex: /tree/i } },
+            { category: { $regex: /tree/i } },
+          ],
+        });
+      } else if (activeService.includes('dump') || activeService.includes('dumb')) {
+        andConditions.push({
+          $or: [
+            { service_type: { $regex: /dump|dumb/i } },
+            { category: { $regex: /dump|dumb/i } },
+            { service_type: { $exists: false } },
+            { service_type: null },
+            { service_type: '' },
+          ],
+        });
+      }
+    }
+
+    // Date range filter
+    if (startDate || endDate) {
+      const dateRange = {};
+      if (startDate) dateRange.$gte = new Date(startDate);
+      if (endDate) dateRange.$lte = new Date(endDate);
+      andConditions.push({ createdAt: dateRange });
+    }
+
+    // Search filter
+    if (search && typeof search === 'string' && search.trim()) {
+      const s = search.trim();
+      const regex = new RegExp(s, 'i');
+
+      const matchingUsers = await User.find({
+        $or: [
+          { name: regex },
+          { comp_name: regex },
+          { email: regex },
+          { phone: regex },
+        ]
+      }).select('_id');
+      const userIds = matchingUsers.map(u => u._id);
+
+      andConditions.push({
+        $or: [
+          { orderNumber: regex },
+          { paymentId: regex },
+          { address: regex },
+          { user: { $in: userIds } },
+          { to_id: { $in: userIds } },
+        ]
+      });
+    }
+
+    const filterQuery = andConditions.length > 0 ? { $and: andConditions } : {};
+
+    const calculateOrderFinancials = (ord) => {
+      const gross = Number(ord.price) || 0;
+      let addonFees = 0;
+      if (ord.driveaway) addonFees += 50;
+      if (ord.cancelation) addonFees += 39;
+      const base = Math.max(0, gross - addonFees);
+      const platformFee = Math.round((base * 0.15) * 100) / 100;
+      const totalPlatformCut = Math.round((platformFee + addonFees) * 100) / 100;
+      const netProviderIncome = Math.round((base - platformFee) * 100) / 100;
+
+      let paymentStatus = 'in_process';
+      if (ord.refunded || ord.status === 'cancelled') {
+        paymentStatus = 'refunded';
+      } else if (ord.status === 'completed') {
+        if (ord.transfer) {
+          paymentStatus = 'released';
+        } else {
+          paymentStatus = 'on_hold';
+        }
+      } else {
+        paymentStatus = 'in_process';
+      }
+
+      return {
+        grossAmount: gross,
+        addonFees,
+        platformFee,
+        totalPlatformCut,
+        netProviderIncome,
+        paymentStatus,
+      };
+    };
+
+    const [orders, totalOrders, allOrders] = await Promise.all([
+      Order.find(filterQuery)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(parsedLimit)
+        .populate('user', 'name comp_name email phone profilePicture')
+        .populate('to_id', 'name comp_name email phone profilePicture')
+        .populate('dumbster', 'name size price tons weight user')
+        .populate('dustbin', 'name size price tons weight user')
+        .populate('portaPotty', 'name price user')
+        .lean(),
+      Order.countDocuments(filterQuery),
+      Order.find({}, 'price driveaway cancelation status transfer refunded').lean(),
+    ]);
+
+    const totalPages = totalOrders === 0 ? 0 : Math.ceil(totalOrders / parsedLimit);
+
+    const formattedOrders = orders.map((order) => {
+      const financials = calculateOrderFinancials(order);
+      const provider = order.to_id || order.dumbster?.user || order.dustbin?.user || null;
+      return {
+        _id: order._id,
+        orderNumber: order.orderNumber || String(order._id).slice(-6).toUpperCase(),
+        serviceType: order.service_type || 'Dumpster',
+        address: order.address,
+        createdAt: order.createdAt,
+        paymentType: order.payment_type || 'stripe',
+        paymentId: order.paymentId || null,
+        transfer: Boolean(order.transfer),
+        transferId: order.transferId || null,
+        refunded: Boolean(order.refunded),
+        status: order.status,
+        customer: {
+          _id: order.user?._id,
+          name: order.user?.name || 'Customer',
+          email: order.user?.email,
+          phone: order.user?.phone,
+        },
+        provider: provider ? {
+          _id: provider._id,
+          name: provider.name || provider.comp_name || 'Provider',
+          comp_name: provider.comp_name,
+          email: provider.email,
+          phone: provider.phone,
+        } : null,
+        financials,
+      };
+    });
+
+    let totalPlatformRevenue = 0;
+    let totalProviderIncome = 0;
+    let inProcessVolume = 0;
+    let onHoldVolume = 0;
+    let releasedVolume = 0;
+    let refundedVolume = 0;
+
+    let inProcessCount = 0;
+    let onHoldCount = 0;
+    let releasedCount = 0;
+    let refundedCount = 0;
+
+    for (const ord of allOrders) {
+      const {
+        grossAmount,
+        totalPlatformCut,
+        netProviderIncome,
+        paymentStatus
+      } = calculateOrderFinancials(ord);
+
+      if (paymentStatus === 'in_process') {
+        inProcessCount += 1;
+        inProcessVolume += grossAmount;
+      } else if (paymentStatus === 'on_hold') {
+        onHoldCount += 1;
+        onHoldVolume += netProviderIncome;
+        totalPlatformRevenue += totalPlatformCut;
+        totalProviderIncome += netProviderIncome;
+      } else if (paymentStatus === 'released') {
+        releasedCount += 1;
+        releasedVolume += netProviderIncome;
+        totalPlatformRevenue += totalPlatformCut;
+        totalProviderIncome += netProviderIncome;
+      } else if (paymentStatus === 'refunded') {
+        refundedCount += 1;
+        refundedVolume += grossAmount;
+      }
+    }
+
+    const summary = {
+      totalPlatformRevenue: Math.round(totalPlatformRevenue * 100) / 100,
+      totalProviderIncome: Math.round(totalProviderIncome * 100) / 100,
+      inProcessVolume: Math.round(inProcessVolume * 100) / 100,
+      onHoldVolume: Math.round(onHoldVolume * 100) / 100,
+      releasedVolume: Math.round(releasedVolume * 100) / 100,
+      refundedVolume: Math.round(refundedVolume * 100) / 100,
+      counts: {
+        all: allOrders.length,
+        in_process: inProcessCount,
+        on_hold: onHoldCount,
+        released: releasedCount,
+        refunded: refundedCount,
+      },
+    };
+
+    return {
+      orders: formattedOrders,
+      summary,
+      pagination: {
+        total: totalOrders,
+        page: parsedPage,
+        limit: parsedLimit,
+        totalPages,
+      },
+    };
   }
 }
 const AdminService = new adminService();

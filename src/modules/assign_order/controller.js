@@ -198,6 +198,22 @@ export const getOperatorDrivers = async (req, res, next) => {
   }
 };
 
+export const getOperatorDriverDetails = async (req, res, next) => {
+  try {
+    const result = await service.getOperatorDriverDetails(
+      req.user._id,
+      req.params.id
+    );
+    res.status(200).json({
+      success: true,
+      message: "Driver details fetched successfully",
+      data: result,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const addOperatorDriver = async (req, res, next) => {
   try {
     const result = await service.addOperatorDriver(req.user._id, req.body);

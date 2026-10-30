@@ -1231,6 +1231,239 @@ class AssignOrderService {
     }
   }
 
+  async getOperatorDriverDetails(operatorId, driverId) {
+    try {
+      let driver = null;
+      if (mongoose.Types.ObjectId.isValid(driverId)) {
+        driver = await SubUserDetail.findById(driverId).lean();
+      }
+      if (!driver) {
+        driver = await SubUserDetail.findOne({
+          $or: [{ phone: String(driverId) }, { name: String(driverId) }],
+        }).lean();
+      }
+      if (!driver) {
+        throw new NotFoundError("Driver not found");
+      }
+
+      const driverObjectId = driver._id;
+      const operatorObjectId = new mongoose.Types.ObjectId(operatorId);
+
+      // Find all AssignOrder records for this driver by this operator
+      const assignOrders = await AssignOrder.find({
+        subUserDetail: driverObjectId,
+        assignBy: operatorObjectId,
+      })
+        .populate({
+          path: "orderId",
+          populate: {
+            path: "user",
+            select: "name comp_name email phone profilePicture",
+          },
+        })
+        .sort({ createdAt: -1 })
+        .lean();
+
+      // Find direct orders where driver is assigned in deliveryWorkflow or pickupWorkflow
+      const directOrders = await Order.find({
+        to_id: operatorObjectId,
+        $or: [
+          { "deliveryWorkflow.assignedDriver": driverObjectId },
+          { "pickupWorkflow.assignedDriver": driverObjectId },
+        ],
+      })
+        .populate("user", "name comp_name email phone profilePicture")
+        .sort({ createdAt: -1 })
+        .lean();
+
+      // Build unified order list deduplicated by order ID
+      const orderMap = new Map();
+
+      for (const ao of assignOrders) {
+        const ord = ao.orderId;
+        if (!ord || !ord._id) continue;
+        const ordIdStr = ord._id.toString();
+
+        const assignStatus = String(ao.status || "").toLowerCase();
+        const ordStatus = String(ord.status || "").toLowerCase();
+        const delivStatus = String(ord.deliveryWorkflow?.status || "").toLowerCase();
+        const pickupStatus = String(ord.pickupWorkflow?.status || "").toLowerCase();
+
+        let categoryStatus = "in_progress";
+        if (
+          assignStatus === "completed" ||
+          assignStatus === "delivered" ||
+          ordStatus === "completed" ||
+          delivStatus === "delivered" ||
+          pickupStatus === "picked_up"
+        ) {
+          categoryStatus = "delivered";
+        } else if (
+          assignStatus === "cancelled" ||
+          assignStatus === "cancel_request" ||
+          ordStatus === "cancelled"
+        ) {
+          categoryStatus = "cancelled";
+        } else if (
+          assignStatus === "en_route" ||
+          assignStatus === "on_route" ||
+          assignStatus === "on_way" ||
+          ordStatus === "dispatched" ||
+          ordStatus === "en_route" ||
+          delivStatus === "en_route" ||
+          pickupStatus === "en_route"
+        ) {
+          categoryStatus = "on_way";
+        } else {
+          categoryStatus = "in_progress";
+        }
+
+        const price = Number(ord.amount || ord.price || 0);
+
+        orderMap.set(ordIdStr, {
+          id: ord._id,
+          assignmentId: ao._id,
+          orderNumber:
+            ord.orderNumber ||
+            `#ORD-${ordIdStr.slice(-6).toUpperCase()}`,
+          serviceType: ord.service_type || "Dumpster",
+          category: ord.category || ord.commercialSize || "Standard Equipment",
+          customer: {
+            name:
+              ord.user?.name ||
+              ord.user?.comp_name ||
+              "Valued Customer",
+            phone: ord.user?.phone || "",
+            email: ord.user?.email || "",
+          },
+          address: ord.address || ord.location || "Client Delivery Site",
+          price,
+          startDate: ord.start_date || ord.delivery_date || ord.createdAt,
+          endDate: ord.end_date || ord.pickup_date || null,
+          categoryStatus,
+          status: ord.status || "in_progress",
+          assignmentStatus: ao.status || "assigned",
+          updatedAt: ao.updatedAt || ord.updatedAt || ord.createdAt,
+          createdAt: ord.createdAt,
+        });
+      }
+
+      for (const ord of directOrders) {
+        const ordIdStr = ord._id.toString();
+        if (orderMap.has(ordIdStr)) continue;
+
+        const ordStatus = String(ord.status || "").toLowerCase();
+        const delivStatus = String(ord.deliveryWorkflow?.status || "").toLowerCase();
+        const pickupStatus = String(ord.pickupWorkflow?.status || "").toLowerCase();
+
+        let categoryStatus = "in_progress";
+        if (
+          ordStatus === "completed" ||
+          delivStatus === "delivered" ||
+          pickupStatus === "picked_up"
+        ) {
+          categoryStatus = "delivered";
+        } else if (ordStatus === "cancelled") {
+          categoryStatus = "cancelled";
+        } else if (
+          ordStatus === "dispatched" ||
+          ordStatus === "en_route" ||
+          delivStatus === "en_route" ||
+          pickupStatus === "en_route"
+        ) {
+          categoryStatus = "on_way";
+        } else {
+          categoryStatus = "in_progress";
+        }
+
+        const price = Number(ord.amount || ord.price || 0);
+
+        orderMap.set(ordIdStr, {
+          id: ord._id,
+          assignmentId: null,
+          orderNumber:
+            ord.orderNumber ||
+            `#ORD-${ordIdStr.slice(-6).toUpperCase()}`,
+          serviceType: ord.service_type || "Dumpster",
+          category: ord.category || ord.commercialSize || "Standard Equipment",
+          customer: {
+            name:
+              ord.user?.name ||
+              ord.user?.comp_name ||
+              "Valued Customer",
+            phone: ord.user?.phone || "",
+            email: ord.user?.email || "",
+          },
+          address: ord.address || ord.location || "Client Delivery Site",
+          price,
+          startDate: ord.start_date || ord.delivery_date || ord.createdAt,
+          endDate: ord.end_date || ord.pickup_date || null,
+          categoryStatus,
+          status: ord.status || "in_progress",
+          assignmentStatus: delivStatus || ord.status || "assigned",
+          updatedAt: ord.updatedAt || ord.createdAt,
+          createdAt: ord.createdAt,
+        });
+      }
+
+      const allOrders = Array.from(orderMap.values()).sort(
+        (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
+      );
+
+      let deliveredCount = 0;
+      let onWayCount = 0;
+      let inProgressCount = 0;
+      let cancelledCount = 0;
+      let revenueGenerated = 0;
+
+      for (const ord of allOrders) {
+        if (ord.categoryStatus === "delivered") {
+          deliveredCount++;
+          revenueGenerated += ord.price;
+        } else if (ord.categoryStatus === "on_way") {
+          onWayCount++;
+        } else if (ord.categoryStatus === "cancelled") {
+          cancelledCount++;
+        } else {
+          inProgressCount++;
+        }
+      }
+
+      const totalOrders = allOrders.length;
+      const completionRate =
+        totalOrders > 0
+          ? `${((deliveredCount / totalOrders) * 100).toFixed(1)}%`
+          : "100.0%";
+
+      return {
+        driver: {
+          id: driver._id,
+          name: driver.name || "Field Driver",
+          phone: driver.phone || "",
+          email: driver.email || "",
+          status: driver.status || "active",
+          rating: "5.0 ★",
+          completionRate,
+          vehicle: driver.vehicle || "Hauling Truck",
+          createdAt: driver.createdAt,
+        },
+        kpis: {
+          total: totalOrders,
+          delivered: deliveredCount,
+          inProgress: inProgressCount,
+          onWay: onWayCount,
+          cancelled: cancelledCount,
+          revenue: Math.round(revenueGenerated),
+          completionRate,
+        },
+        orders: allOrders,
+      };
+    } catch (error) {
+      logger.error("getOperatorDriverDetails error:", error);
+      throw error;
+    }
+  }
+
   async getDriverIdsForOperator(operatorId) {
     const assignments = await AssignOrder.find({ assignBy: operatorId })
       .select("subUserDetail")

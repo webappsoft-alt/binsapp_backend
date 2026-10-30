@@ -114,72 +114,215 @@ class RatingService {
       throw error;
     }
   }
-  async getUserRatings(userId, page = 1, limit = 10) {
-    let query = {};
-    query.to_id = userId;
-
+  async getUserRatings(userId, pageOrOptions = 1, maybeLimit = 10) {
     try {
+      let page = 1;
+      let limit = 10;
+      let sortBy = "newest";
+      let ratingFilter = null;
+      let serviceFilter = null;
+      let searchQuery = null;
+
+      if (typeof pageOrOptions === "object" && pageOrOptions !== null) {
+        page = pageOrOptions.page || 1;
+        limit = pageOrOptions.limit || 50;
+        sortBy = pageOrOptions.sortBy || pageOrOptions.sort || "newest";
+        ratingFilter = pageOrOptions.rating;
+        serviceFilter = pageOrOptions.service;
+        searchQuery = pageOrOptions.search;
+      } else {
+        page = pageOrOptions;
+        limit = maybeLimit;
+      }
+
       const user = await User.findById(userId);
       if (!user) throw new NotFoundError("User does not exist for that ID.");
 
-      const avg_rating = user.rating;
-      const totalLength = user.total_reviews;
+      // Find all orders belonging to this provider to ensure all order reviews are included
+      const providerOrders = await Order.find({ to_id: userId })
+        .select("_id")
+        .lean();
+      const orderIds = providerOrders.map((o) => o._id);
 
-      const rating = await Rating.find(query)
-        .sort({ _id: -1 })
+      const baseQuery = {
+        $or: [
+          { to_id: userId },
+          { order: { $in: orderIds } },
+        ],
+      };
+
+      const totalLength = await Rating.countDocuments(baseQuery);
+      const rating1 = await Rating.countDocuments({ ...baseQuery, rating: 1 });
+      const rating2 = await Rating.countDocuments({ ...baseQuery, rating: 2 });
+      const rating3 = await Rating.countDocuments({ ...baseQuery, rating: 3 });
+      const rating4 = await Rating.countDocuments({ ...baseQuery, rating: 4 });
+      const rating5 = await Rating.countDocuments({ ...baseQuery, rating: 5 });
+
+      const allRatings = await Rating.find(baseQuery).select("rating").lean();
+      const sumRating = allRatings.reduce((sum, r) => sum + (Number(r?.rating) || 0), 0);
+      const avg_rating = allRatings.length > 0
+        ? Number((sumRating / allRatings.length).toFixed(1))
+        : Number(user.rating || 0);
+
+      const parsedLimit = Number(limit) > 0 ? Number(limit) : 10;
+      const parsedPage = Number(page) > 0 ? Number(page) : 1;
+
+      // Filtered query for list
+      const filteredQuery = { ...baseQuery };
+      if (ratingFilter && ratingFilter !== "all") {
+        filteredQuery.rating = Number(ratingFilter);
+      }
+      if (searchQuery && String(searchQuery).trim()) {
+        filteredQuery.review = { $regex: String(searchQuery).trim(), $options: "i" };
+      }
+
+      // Sort criteria
+      let sortObj = { createdAt: -1, _id: -1 };
+      if (sortBy === "oldest") {
+        sortObj = { createdAt: 1, _id: 1 };
+      } else if (sortBy === "highest") {
+        sortObj = { rating: -1, createdAt: -1 };
+      } else if (sortBy === "lowest") {
+        sortObj = { rating: 1, createdAt: 1 };
+      }
+
+      const rating = await Rating.find(filteredQuery)
+        .sort(sortObj)
         .populate([
-          "user",
+          {
+            path: "user",
+            select: "name email phone profilePicture",
+          },
+          {
+            path: "to_id",
+            select: "name email phone profilePicture",
+          },
           {
             path: "order",
-            populate: {
-              path: "dumbster",
-            },
+            populate: [
+              { path: "dumbster" },
+              { path: "junkRemoval" },
+              { path: "treeRemoval" },
+              { path: "portaPotty" },
+            ],
           },
         ])
-        .limit(limit)
-        .skip((page - 1) * limit)
+        .limit(parsedLimit)
+        .skip((parsedPage - 1) * parsedLimit)
         .lean();
 
-      const rating1 = await Rating.countDocuments({ to_id: userId, rating: 1 });
-      const rating2 = await Rating.countDocuments({ to_id: userId, rating: 2 });
-      const rating3 = await Rating.countDocuments({ to_id: userId, rating: 3 });
-      const rating4 = await Rating.countDocuments({ to_id: userId, rating: 4 });
-      const rating5 = await Rating.countDocuments({ to_id: userId, rating: 5 });
-      if (rating.length > 0) {
-        return {
-          success: true,
-          ratings: rating,
-          totalLength: totalLength,
-          totalsRating: {
-            1: rating1,
-            2: rating2,
-            3: rating3,
-            4: rating4,
-            5: rating5,
-          },
-          avg_rating,
-          pagination: {
-            page,
-            limit,
-            totalPages: Math.ceil(totalLength / limit),
-          },
-        };
-      } else {
-        return {
-          success: false,
-          message: "No more ratings found",
-          ratings: [],
-          totalLength: totalLength,
-          totalsRating: {
-            1: rating1,
-            2: rating2,
-            3: rating3,
-            4: rating4,
-            5: rating5,
-          },
-          avg_rating,
-        };
+      return {
+        success: true,
+        ratings: rating,
+        totalLength: totalLength,
+        filteredCount: await Rating.countDocuments(filteredQuery),
+        totalsRating: {
+          1: rating1,
+          2: rating2,
+          3: rating3,
+          4: rating4,
+          5: rating5,
+        },
+        avg_rating,
+        pagination: {
+          page: parsedPage,
+          limit: parsedLimit,
+          totalPages: Math.ceil(totalLength / parsedLimit) || 1,
+        },
+      };
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  async deleteRating(ratingId, currentUser) {
+    try {
+      const rating = await Rating.findById(ratingId);
+      if (!rating) {
+        throw new NotFoundError("Rating not found.");
       }
+
+      const currentUserId =
+        currentUser?._id?.toString() || currentUser?.id?.toString();
+      const isTargetUser =
+        rating.to_id && rating.to_id.toString() === currentUserId;
+      const isAuthor =
+        rating.user && rating.user.toString() === currentUserId;
+      const isAdmin =
+        currentUser?.role === "admin" || currentUser?.userType === "admin";
+
+      let isOrderOwner = false;
+      if (rating.order) {
+        const orderDoc = await Order.findById(rating.order)
+          .select("to_id")
+          .lean();
+        if (
+          orderDoc &&
+          orderDoc.to_id &&
+          orderDoc.to_id.toString() === currentUserId
+        ) {
+          isOrderOwner = true;
+        }
+      }
+
+      if (!isTargetUser && !isAuthor && !isAdmin && !isOrderOwner) {
+        throw new ForbiddenError(
+          "You are not authorized to delete this review."
+        );
+      }
+
+      // Clear references in Order
+      if (rating.order) {
+        const orderUpdate = {};
+        if (rating.type === "rentee") {
+          orderUpdate.rentee_rating = null;
+          orderUpdate.renteeRate = false;
+        } else {
+          orderUpdate.renter_rating = null;
+        }
+        await Order.findByIdAndUpdate(rating.order, { $unset: orderUpdate });
+      }
+
+      // Recalculate average rating and total_reviews on target user
+      if (rating.to_id) {
+        const remainingRatings = await Rating.find({
+          to_id: rating.to_id,
+          _id: { $ne: rating._id },
+        })
+          .select("rating")
+          .lean();
+
+        const targetUser = await User.findById(rating.to_id);
+        if (targetUser) {
+          targetUser.total_reviews = remainingRatings.length;
+          if (remainingRatings.length === 0) {
+            targetUser.rating = 0;
+          } else {
+            const sum = remainingRatings.reduce(
+              (acc, r) => acc + (Number(r.rating) || 0),
+              0
+            );
+            targetUser.rating = Number(
+              (sum / remainingRatings.length).toFixed(1)
+            );
+          }
+          await targetUser.save();
+        }
+
+        recomputeOperatorGrowth(rating.to_id, {
+          notify: false,
+          reason: "rating_deleted",
+        }).catch((err) =>
+          logger.error("Failed to recompute growth after rating delete", err)
+        );
+      }
+
+      await Rating.findByIdAndDelete(ratingId);
+
+      return {
+        id: ratingId,
+        deleted: true,
+      };
     } catch (error) {
       throw error;
     }
@@ -233,48 +376,87 @@ class RatingService {
       throw error;
     }
   }
-  async getALLRatings(page = 1, limit = 10) {
-    const rating = await Rating.find()
-      .sort({ createdAt: -1 })
-      .populate([
-        {
-          path: "user",
-          select: ["name", "phone", "profilePicture", "email", "operatorStats"],
-        },
-        {
-          path: "to_id",
-          select: ["name", "phone", "profilePicture", "email", "operatorStats"],
-        },
-        // {
-        //   path: "order",
-        //   populate: {
-        //     path: "dumbster",
-        //   },
-        //   populate: {
-        //     path: "portaPotty",
-        //   },
-        //   select: [
-        //     "dumbster",
-        //     "portaPotty",
-        //     "service_type",
-        //     "category",
-        //     "address",
-        //     "subCategory",
-        //     "image",
-        //   ],
-        // },
-      ])
-      .limit(limit)
-      .skip((page - 1) * limit)
-      .lean();
-    const totalLength = await Rating.countDocuments();
+  async getALLRatings(page = 1, limit = 10, filters = {}) {
+    const { search, rating, type } = filters || {};
+    let query = {};
+    if (rating && rating !== "all") {
+      query.rating = Number(rating);
+    }
+    if (type && type !== "all") {
+      query.type = type;
+    }
+    if (search && String(search).trim()) {
+      query.$or = [
+        { review: { $regex: String(search).trim(), $options: "i" } },
+      ];
+    }
+
+    const [ratingList, totalLength, allRatings] = await Promise.all([
+      Rating.find(query)
+        .sort({ createdAt: -1 })
+        .populate([
+          {
+            path: "user",
+            select: ["name", "comp_name", "phone", "profilePicture", "email", "operatorStats"],
+          },
+          {
+            path: "to_id",
+            select: ["name", "comp_name", "phone", "profilePicture", "email", "operatorStats"],
+          },
+          {
+            path: "order",
+            select: [
+              "orderNumber",
+              "service_type",
+              "category",
+              "address",
+              "price",
+              "amount",
+              "status",
+              "city",
+              "state",
+            ],
+          },
+        ])
+        .limit(Number(limit))
+        .skip((Number(page) - 1) * Number(limit))
+        .lean(),
+      Rating.countDocuments(query),
+      Rating.find().select("rating type").lean(),
+    ]);
+
+    const totalCount = allRatings.length;
+    const avgRating =
+      totalCount > 0
+        ? (
+            allRatings.reduce((sum, r) => sum + (Number(r.rating) || 0), 0) /
+            totalCount
+          ).toFixed(1)
+        : "5.0";
+
+    const breakdown = {
+      5: allRatings.filter((r) => r.rating === 5).length,
+      4: allRatings.filter((r) => r.rating === 4).length,
+      3: allRatings.filter((r) => r.rating === 3).length,
+      2: allRatings.filter((r) => r.rating === 2).length,
+      1: allRatings.filter((r) => r.rating === 1).length,
+    };
+
     return {
       success: true,
-      ratings: rating,
+      ratings: ratingList,
+      stats: {
+        total: totalCount,
+        average: Number(avgRating),
+        breakdown,
+        customerReviews: allRatings.filter((r) => r.type === "rentee").length,
+        providerReviews: allRatings.filter((r) => r.type === "renter").length,
+      },
       pagination: {
-        page,
-        limit,
-        totalPages: Math.ceil(totalLength / limit),
+        page: Number(page),
+        limit: Number(limit),
+        totalPages: Math.ceil(totalLength / Number(limit)) || 1,
+        total: totalLength,
       },
     };
   }
