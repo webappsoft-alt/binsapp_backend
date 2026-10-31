@@ -1564,7 +1564,7 @@ export const initSocket = (server) => {
               cancelation: cancelation || false,
             }).amount,
             company: commercialQuote ? resolvedCompanyId : null,
-            jobSite: commercialQuote ? jobSiteId || null : null,
+            jobSite: commercialQuote && mongoose.isValidObjectId(jobSiteId) ? jobSiteId : null,
             images: images || [],
             metadata: orderMetadata,
             portaPotty: portaPottyId || null,

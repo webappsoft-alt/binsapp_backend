@@ -171,5 +171,8 @@ const companySchema = new Schema(
   },
 );
 
+companySchema.index({ user: 1 });
+companySchema.index({ status: 1 });
+
 const Company = model("Company", companySchema);
 export default Company;

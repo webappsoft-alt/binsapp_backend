@@ -158,6 +158,8 @@ messageSchema.index({ type: 1 });
 messageSchema.index({ replyTo: 1 });
 messageSchema.index({ "deliveryStatus.read": 1 });
 messageSchema.index({ "deliveryStatus.delivered": 1 });
+messageSchema.index({ receiverId: 1, "deliveryStatus.delivered": 1 });
+messageSchema.index({ conversationId: 1, receiverId: 1, "deliveryStatus.read": 1 });
 
 const Message = model("Message", messageSchema);
 

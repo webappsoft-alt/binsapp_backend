@@ -370,14 +370,23 @@ class CompanyService {
   }
   async getJobSite(query = {}, { page = 1, limit = 10 }) {
     try {
-      const jobSites = await this.JobSite.find(query)
-        .populate(["user", "company", "dumbsterId", "portaPottyId"])
-        .sort({ createdAt: -1 })
-        .skip((page - 1) * limit)
-        .limit(limit);
-      const total = await this.JobSite.countDocuments(query);
-      const formattedSites = jobSites.map((doc) => {
-        const obj = doc.toObject ? doc.toObject() : { ...doc };
+      const safePage = Math.max(1, Number(page) || 1);
+      const safeLimit = Math.max(1, Math.min(100, Number(limit) || 10));
+
+      const [jobSites, total] = await Promise.all([
+        this.JobSite.find(query)
+          .populate("user", "name comp_name email phone")
+          .populate("company", "companyName legalBusinessName status")
+          .populate("dumbsterId", "name size price image tons weight")
+          .populate("portaPottyId", "name price type")
+          .sort({ createdAt: -1 })
+          .skip((safePage - 1) * safeLimit)
+          .limit(safeLimit)
+          .lean(),
+        this.JobSite.countDocuments(query),
+      ]);
+
+      const formattedSites = jobSites.map((obj) => {
         if (!obj.placementPhotos || !obj.placementPhotos.length) {
           const fallback = obj.placementPhotoUrl || obj.dropoff_image || obj.image;
           obj.placementPhotos = fallback ? [fallback] : [];
@@ -387,11 +396,12 @@ class CompanyService {
         }
         return obj;
       });
+
       return {
         data: formattedSites,
         pagination: {
-          page,
-          limit,
+          page: safePage,
+          limit: safeLimit,
           total,
         },
       };
@@ -447,8 +457,18 @@ class CompanyService {
       const currentMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
       const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
 
-      // 3. Faceted MongoDB Aggregation for all KPI numbers, spend, & status counts
-      const [analyticsResult] = await this.Order.aggregate([
+      // 3. Run all overview database queries in PARALLEL via Promise.all
+      const siteQuery = company?._id
+        ? { $or: [{ user: userObjectId }, { company: company._id }] }
+        : { user: userObjectId };
+
+      const [
+        [analyticsResult],
+        allJobSites,
+        activeEquipment,
+        upcomingDeliveries,
+      ] = await Promise.all([
+        this.Order.aggregate([
         { $match: matchCriteria },
         {
           $facet: {
@@ -585,23 +605,52 @@ class CompanyService {
             ],
           },
         },
-      ]);
+      ]),
+      this.JobSite.find(siteQuery)
+        .select("projectName siteName address poNumber costCode")
+        .lean(),
+      this.Order.find({
+        ...matchCriteria,
+        status: "accepted",
+        service_type: { $in: ["Dumbster", "Porta Potty"] },
+      })
+        .select(
+          "orderNumber status service_type start_date end_date price total_price dumbster portaPotty jobSite swapRequest readyToPickup num_days to_id"
+        )
+        .populate("dumbster", "name size price tons weight image")
+        .populate("portaPotty", "name price type")
+        .populate("jobSite", "siteName address poNumber")
+        .populate("to_id", "comp_name name")
+        .sort({ createdAt: -1 })
+        .limit(6)
+        .lean(),
+      this.Order.find({
+        ...matchCriteria,
+        $or: [
+          { status: "pending" },
+          { status: "accepted", start_date: { $gte: now } },
+        ],
+      })
+        .select(
+          "orderNumber status service_type start_date end_date price total_price dumbster jobSite to_id"
+        )
+        .populate("dumbster", "name size price tons weight image")
+        .populate("jobSite", "siteName address poNumber")
+        .populate("to_id", "comp_name name")
+        .sort({ start_date: 1 })
+        .limit(5)
+        .lean(),
+    ]);
 
-      const fin = analyticsResult?.financials?.[0] || {};
-      const counts = analyticsResult?.statusCounts?.[0] || {};
-      const rawProjectAllocations = analyticsResult?.projectAllocations || [];
+    const fin = analyticsResult?.financials?.[0] || {};
+    const counts = analyticsResult?.statusCounts?.[0] || {};
+    const rawProjectAllocations = analyticsResult?.projectAllocations || [];
 
-      const thisMonthSpend = fin.thisMonthSpend || 0;
-      const budgetPct =
-        monthlyBudget > 0
-          ? Math.min(100, Math.round((thisMonthSpend / monthlyBudget) * 100))
-          : 0;
-
-      // 4. Fetch all user/company JobSites to merge project allocations
-      const siteQuery = company?._id
-        ? { $or: [{ user: userObjectId }, { company: company._id }] }
-        : { user: userObjectId };
-      const allJobSites = await this.JobSite.find(siteQuery).lean();
+    const thisMonthSpend = fin.thisMonthSpend || 0;
+    const budgetPct =
+      monthlyBudget > 0
+        ? Math.min(100, Math.round((thisMonthSpend / monthlyBudget) * 100))
+        : 0;
 
       const siteMap = new Map();
       allJobSites.forEach((s) => {
@@ -663,32 +712,7 @@ class CompanyService {
       // Sort project breakdown by total spend descending
       projectBreakdown.sort((a, b) => b.totalSpend - a.totalSpend);
 
-      // 5. Active Equipment Query (Top 6 deployed)
-      const activeEquipment = await this.Order.find({
-        ...matchCriteria,
-        status: "accepted",
-        service_type: { $in: ["Dumbster", "Porta Potty"] },
-      })
-        .populate("dumbster")
-        .populate("portaPotty")
-        .populate("jobSite")
-        .sort({ createdAt: -1 })
-        .limit(6)
-        .lean();
 
-      // 6. Upcoming Deliveries Query (Top 5 scheduled)
-      const upcomingDeliveries = await this.Order.find({
-        ...matchCriteria,
-        $or: [
-          { status: "pending" },
-          { status: "accepted", start_date: { $gte: now } },
-        ],
-      })
-        .populate("dumbster")
-        .populate("jobSite")
-        .sort({ start_date: 1 })
-        .limit(5)
-        .lean();
 
       return {
         company: {
@@ -746,7 +770,7 @@ class CompanyService {
         service_type: { $in: ["Dumbster", "Porta Potty"] },
       };
 
-      if (query.jobsiteId) {
+      if (query.jobsiteId && mongoose.default.isValidObjectId(query.jobsiteId)) {
         match.jobSite = new mongoose.default.Types.ObjectId(String(query.jobsiteId));
       }
       if (query.serviceType && query.serviceType !== "all") {

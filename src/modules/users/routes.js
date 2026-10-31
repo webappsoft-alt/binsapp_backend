@@ -54,6 +54,7 @@ router.use(authenticate);
  */
 
 router.get("/me", userInfoController);
+router.get("/profile", userInfoController);
 
 /**
  * @swagger

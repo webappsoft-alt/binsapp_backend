@@ -4,6 +4,15 @@ import { UnauthorizedError, ForbiddenError } from "../utils/apiError.js";
 import User from "../models/User.js";
 import { AssignOrder, SubUserDetail } from "../models/AssignOrder.js";
 
+// Fast in-memory cache for authenticated user lookups (15s TTL)
+// Eliminates redundant MongoDB User.findById queries across simultaneous dashboard requests
+const authUserCache = new Map();
+const AUTH_CACHE_TTL_MS = 15000;
+
+export function invalidateAuthUserCache(userId) {
+  if (userId) authUserCache.delete(String(userId));
+}
+
 /**
  * Middleware to verify JWT access token
  */
@@ -21,13 +30,26 @@ export const authenticate = async (req, res, next) => {
     if (!secret) throw new Error("JWT secret not configured");
 
     const decoded = jwt.verify(token, secret);
+    const userIdStr = String(decoded._id);
 
-    // Fetch user (optional but good for RBAC or user checks)
-    const user = await User.findById(decoded._id);
-    if (!user) throw new ForbiddenError("User no longer exists");
+    // Fast in-memory cache check
+    let user;
+    const cached = authUserCache.get(userIdStr);
+    if (cached && Date.now() - cached.timestamp < AUTH_CACHE_TTL_MS) {
+      user = cached.user;
+    } else {
+      user = await User.findById(decoded._id).lean();
+      if (!user) throw new ForbiddenError("User no longer exists");
+      if (authUserCache.size > 2000) {
+        const oldestKey = authUserCache.keys().next().value;
+        authUserCache.delete(oldestKey);
+      }
+      authUserCache.set(userIdStr, { user, timestamp: Date.now() });
+    }
 
-    // Optional: block non-active users
+    // Block non-active users
     if (user.status === "deleted" || user.status === "deactivated") {
+      authUserCache.delete(userIdStr);
       throw new ForbiddenError(`User account is ${user.status}`);
     }
 

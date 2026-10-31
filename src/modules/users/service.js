@@ -15,6 +15,7 @@ import Company from "../../models/Company.js";
 import { sendNotification } from "../../utils/notifications.js";
 import { servicePendingReviewTemplate } from "../../utils/emailTemplate.js";
 import logger from "../../config/logger.js";
+import { invalidateAuthUserCache } from "../../middlewares/auth.js";
 
 const generateRandomString = (length = 10) => {
   let result = "";
@@ -29,7 +30,15 @@ const generateRandomString = (length = 10) => {
 
 export async function userinfo(userId) {
   let user = await User.findById(userId)
-    .populate(["junkRemoval", "treeRemoval", "company"])
+    .populate([
+      { path: "junkRemoval", select: "status COI" },
+      { path: "treeRemoval", select: "status" },
+      {
+        path: "company",
+        select:
+          "companyName legalBusinessName status expectedMonthlyVolume invoiceTerms pricingPlan",
+      },
+    ])
     .select("-password")
     .lean();
   if (!user) throw new BadRequestError("User not found");
@@ -327,6 +336,7 @@ export async function updateUser(userId, updates = {}) {
   }
   // console.log("user.company", user.company);
   await user.save();
+  invalidateAuthUserCache(userId);
 
   if (appliedServices.length > 0) {
     notifyUserOfServiceApplicationPending(user, appliedServices).catch((err) =>

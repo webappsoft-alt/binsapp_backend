@@ -80,4 +80,7 @@ const notificationSchema = new mongoose.Schema({
   },
 });
 
+notificationSchema.index({ to_id: 1, createdAt: -1 });
+notificationSchema.index({ to_id: 1, seen: 1, createdAt: -1 });
+
 export default mongoose.model("Notification", notificationSchema);

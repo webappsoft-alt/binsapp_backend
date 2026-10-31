@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import Company from "../models/Company.js";
 import CommercialGlobalPricing from "../models/CommercialGlobalPricing.js";
 import Dumbster from "../models/Dumbster.js";
@@ -428,12 +429,23 @@ export async function quoteCommercialDumpster({
 
   let jobSite = null;
   if (jobSiteId) {
-    jobSite = await JobSite.findOne({
-      _id: jobSiteId,
-      company: companyId,
-      status: { $ne: "deleted" },
-    }).lean();
-    if (!jobSite) throw new NotFoundError("Job site not found for this company");
+    if (mongoose.isValidObjectId(jobSiteId)) {
+      jobSite = await JobSite.findOne({
+        _id: jobSiteId,
+        company: companyId,
+        status: { $ne: "deleted" },
+      }).lean();
+    }
+    if (!jobSite) {
+      jobSite = await JobSite.findOne({
+        company: companyId,
+        status: { $ne: "deleted" },
+        $or: [
+          { siteName: String(jobSiteId).trim() },
+          { address: String(jobSiteId).trim() },
+        ],
+      }).lean();
+    }
   }
 
   // Prefer explicit size / job-site default, then the selected catalog dumpster.
@@ -452,6 +464,19 @@ export async function quoteCommercialDumpster({
 
   if (!resolvedSize) {
     throw new BadRequestError("A commercial dumpster size (20/30/40) is required");
+  }
+
+  if (dumpster && normalizeCommercialSize(dumpster.size) !== resolvedSize) {
+    const sizeEnums = commercialSizeToDumbsterSizes(resolvedSize);
+    const matchingDumpster = await Dumbster.findOne({
+      size: { $in: sizeEnums },
+      status: "active",
+    })
+      .sort({ updatedAt: -1 })
+      .lean();
+    if (matchingDumpster) {
+      dumpster = matchingDumpster;
+    }
   }
 
   if (!dumpster) {

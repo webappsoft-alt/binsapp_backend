@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import Company from "../../models/Company.js";
 import BillingRecord from "../../models/BillingRecord.js";
 import Order from "../../models/Order.js";
@@ -606,9 +607,14 @@ export async function createSwapRequest(userId, orderId, payload = {}) {
         return d;
       })();
 
+  const candidateJobSiteId = order.jobSite?._id || order.jobSite;
+  const safeJobSiteId = mongoose.isValidObjectId(candidateJobSiteId)
+    ? candidateJobSiteId
+    : null;
+
   const quote = await quoteCommercialDumpster({
     companyId: order.company._id || order.company,
-    jobSiteId: order.jobSite?._id || order.jobSite,
+    jobSiteId: safeJobSiteId,
     size: requestedSize,
     numDays: order.num_days || 3,
     location: order.location,
@@ -657,7 +663,7 @@ export async function createSwapRequest(userId, orderId, payload = {}) {
   const dropoffOrder = await Order.create({
     user: order.user._id || order.user,
     company: companyId,
-    jobSite: order.jobSite?._id || order.jobSite || null,
+    jobSite: safeJobSiteId,
     dumbster: dumbsterId,
     start_date: windowStart,
     end_date: new Date(

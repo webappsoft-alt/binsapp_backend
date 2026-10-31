@@ -47,6 +47,7 @@ conversationSchema.index({ serviceType: 1, participants: 1 });
 conversationSchema.index({ serviceType: 1, status: 1 });
 conversationSchema.index({ serviceReference: 1 });
 conversationSchema.index({ status: 1, lastActivity: -1 });
+conversationSchema.index({ participants: 1, status: 1, lastActivity: -1 });
 
 const Conversation = model("Conversation", conversationSchema);
 

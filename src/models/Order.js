@@ -646,5 +646,12 @@ orderSchema.index({ status: 1, createdAt: -1 });
 orderSchema.index({ createdAt: -1 });
 orderSchema.index({ status: 1, updatedAt: -1 });
 orderSchema.index({ updatedAt: -1 });
+orderSchema.index({ user: 1, status: 1, _id: -1 });
+orderSchema.index({ company: 1, status: 1, _id: -1 });
+orderSchema.index({ user: 1, status: 1, createdAt: -1 });
+orderSchema.index({ company: 1, status: 1, createdAt: -1 });
+orderSchema.index({ user: 1, status: 1, start_date: 1 });
+orderSchema.index({ company: 1, status: 1, start_date: 1 });
+orderSchema.index({ company: 1, createdAt: -1 });
 
 export default mongoose.model("Order", orderSchema);

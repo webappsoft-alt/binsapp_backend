@@ -128,7 +128,22 @@ export const renteeOrder = async (req, res, next) => {
     }
 
     if (jobSite && typeof jobSite === "string" && jobSite !== "all") {
-      query.jobSite = jobSite;
+      if (mongoose.isValidObjectId(jobSite)) {
+        query.jobSite = jobSite;
+      } else {
+        const safeSite = jobSite.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const matchingSites = await JobSites.find({
+          $or: [
+            { siteName: { $regex: safeSite, $options: "i" } },
+            { address: { $regex: safeSite, $options: "i" } },
+          ],
+        }).select("_id");
+        const matchingIds = matchingSites.map((s) => s._id);
+        query.$or = [
+          { address: { $regex: safeSite, $options: "i" } },
+          ...(matchingIds.length > 0 ? [{ jobSite: { $in: matchingIds } }] : []),
+        ];
+      }
     }
 
     if (search && typeof search === "string" && search.trim()) {

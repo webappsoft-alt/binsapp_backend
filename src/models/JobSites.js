@@ -134,5 +134,11 @@ const jobSitesSchema = new Schema(
   { timestamps: true },
 );
 
+jobSitesSchema.index({ user: 1, createdAt: -1 });
+jobSitesSchema.index({ company: 1, createdAt: -1 });
+jobSitesSchema.index({ user: 1, status: 1 });
+jobSitesSchema.index({ company: 1, status: 1 });
+jobSitesSchema.index({ siteName: 1 });
+
 const JobSites = model("JobSites", jobSitesSchema);
 export default JobSites;

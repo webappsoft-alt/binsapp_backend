@@ -37,13 +37,11 @@ export async function getAllConversations(userId, options = {}) {
     // Calculate skip value for pagination
     const skip = (page - 1) * limit;
 
-    // Build population options based on includeUserDetails flag
+    // Build population options without loading all messages array
     const populationOptions = [
       {
         path: "participants",
-      },
-      {
-        path: "messages",
+        select: "name comp_name email phone profilePicture role",
       },
     ];
 
@@ -52,6 +50,7 @@ export async function getAllConversations(userId, options = {}) {
         path: "lastMessage",
         populate: {
           path: "senderId",
+          select: "name comp_name email phone profilePicture role",
         },
       });
     } else {
@@ -77,11 +76,12 @@ export async function getAllConversations(userId, options = {}) {
         $in: otherUserIdArray,
       };
     } else if (search) {
+      const safeSearch = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       const users = await User.find({
         $or: [
-          { name: { $regex: search, $options: "i" } },
-          { email: { $regex: search, $options: "i" } },
-          { phone: { $regex: search, $options: "i" } },
+          { name: { $regex: safeSearch, $options: "i" } },
+          { email: { $regex: safeSearch, $options: "i" } },
+          { phone: { $regex: safeSearch, $options: "i" } },
         ],
       })
         .select("_id")
@@ -96,45 +96,60 @@ export async function getAllConversations(userId, options = {}) {
       queryFilters.participants = { $in: [userIdObj] };
     }
 
-    // // Add service type filter if provided
-    // if (serviceType) {
-    //   queryFilters.serviceType = serviceType;
-    // }
+    // Parallel execution of conversations list and total count
+    const [conversations, total] = await Promise.all([
+      Conversation.find(queryFilters)
+        .populate(populationOptions)
+        .sort({ lastActivity: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      Conversation.countDocuments(queryFilters),
+    ]);
 
-    // Query construction
-    const query = Conversation.find(queryFilters)
-      .populate(populationOptions)
-      .sort({ lastActivity: -1 })
-      .skip(skip)
-      .limit(limit);
-
-    // Execute the query
-    const conversations = await query.exec();
-    // Update all messages status deleverd
-
-    await Message.updateMany(
+    // Update message delivered status asynchronously in background
+    Message.updateMany(
       { receiverId: userIdObj, "deliveryStatus.delivered": false },
       {
         "deliveryStatus.delivered": true,
         "deliveryStatus.deliveredAt": new Date(),
       },
+    ).catch((err) =>
+      console.error("Async message delivered status update failed:", err)
     );
+
+    // Compute unread message counts for this page via fast indexed aggregation
+    const convIds = conversations.map((c) => c._id);
+    const unreadMap = new Map();
+    if (convIds.length > 0) {
+      const unreadStats = await Message.aggregate([
+        {
+          $match: {
+            conversationId: { $in: convIds },
+            receiverId: userIdObj,
+            "deliveryStatus.read": false,
+          },
+        },
+        {
+          $group: {
+            _id: "$conversationId",
+            count: { $sum: 1 },
+          },
+        },
+      ]);
+      unreadStats.forEach((u) => unreadMap.set(String(u._id), u.count));
+    }
 
     // Process conversations to extract other user info
     const processedConversations = conversations.map((conversation) => {
-      // Find the other participant (not the current user)
-      const otherUser = conversation.participants.find(
-        (participant) => !participant._id.equals(userIdObj),
-      );
-      // console.log(" conversation.messages?",  conversation.messages);
-      const unreadCount = conversation.messages?.filter(
-        (message) =>
-          message.deliveryStatus?.read === false &&
-          message.senderId.toString() !== userIdObj.toString(),
-      ).length;
-      // console.log("unreadCount", unreadCount);
+      const otherUser = Array.isArray(conversation.participants)
+        ? conversation.participants.find(
+            (participant) => String(participant._id || participant) !== String(userIdObj)
+          )
+        : null;
 
-      // Return conversation with enhanced info
+      const unreadCount = unreadMap.get(String(conversation._id)) || 0;
+
       return {
         _id: conversation._id,
         participants: conversation.participants,
@@ -142,14 +157,10 @@ export async function getAllConversations(userId, options = {}) {
         unreadCount: unreadCount,
         lastActivity: conversation.lastActivity,
         otherUser: otherUser || null,
-        isGroup: conversation.participants.length > 2, // Flag for group chats
+        isGroup: (conversation.participants?.length || 0) > 2,
       };
     });
 
-    // Get total count for pagination info
-    const total = await Conversation.countDocuments(queryFilters);
-
-    // Calculate total pages
     const totalPages = Math.ceil(total / limit);
 
     return {

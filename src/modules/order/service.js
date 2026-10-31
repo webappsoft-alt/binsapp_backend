@@ -85,7 +85,10 @@ class OrderService {
         path: "junkRemoval",
         select: "title price",
       },
-      "jobSite",
+      {
+        path: "jobSite",
+        select: "siteName siteAddress streetAddress city state zipCode status user company",
+      },
       {
         path: "leadId",
         select:
@@ -100,7 +103,11 @@ class OrderService {
       },
     ];
 
-    if (role !== PRICING_ROLES.ADMIN) {
+    if (
+      role === PRICING_ROLES.OWNER ||
+      role === PRICING_ROLES.PROVIDER ||
+      role === "renter"
+    ) {
       basePopulate.push(
         {
           path: "userIds",
