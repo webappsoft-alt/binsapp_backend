@@ -733,6 +733,15 @@ export async function quoteCommercialDumpster({
       ? Number(activeTerms.extraDay)
       : Number(resolved.card.perDiemRate) || 0;
 
+  const tierRates = {
+    oneDay: Number(dumpster?.base_price || dumpster?.price || 0),
+    threeDays: Number(resolved.card.threeDayPrice || 0),
+    sevenDays: Number(resolved.card.sevenDayPrice || 0),
+    fourteenDays: Number(resolved.card.fourteenDayPrice || 0),
+    thirtyDays: Number(resolved.card.thirtyDayPrice || 0),
+    perDiem: perDiemRate,
+  };
+
   return {
     companyId: company._id.toString(),
     jobSiteId: jobSite?._id?.toString() || null,
@@ -754,6 +763,7 @@ export async function quoteCommercialDumpster({
             activeTerms?.includedTonsPerRotation != null)),
     ),
     dumbsterId: dumpster?._id?.toString() || null,
+    tierRates,
     breakdown: {
       packageDays: packageQuote.packageDays,
       packagePrice: unitPackagePrice,
@@ -763,6 +773,7 @@ export async function quoteCommercialDumpster({
       quantity: qty,
       unitTotal,
       total,
+      tierRates,
     },
     tonnage: {
       includedTons,

@@ -157,6 +157,109 @@ class OrderService {
       totalPages: Math.ceil(total / safeLimit),
     };
   }
+
+  /**
+   * Dedicated fetch for rentee requests (GET /api/order/rentee/request)
+   * ONLY this API populates userIds with provider objects.
+   */
+  async fetchrequestOrderRentee(query, page = 1, limit = 10) {
+    const safePage = Math.max(1, parseInt(page) || 1);
+    const safeLimit = Math.max(1, parseInt(limit) || 10);
+
+    const basePopulate = [
+      {
+        path: "user",
+        select: "name comp_name email phone profilePicture address location",
+      },
+      {
+        path: "to_id",
+        select:
+          "name comp_name email phone profilePicture rating total_reviews location address stripe_connect_id",
+      },
+      {
+        path: "dumbster",
+        select: "name size price tons weight image",
+      },
+      {
+        path: "dustbin",
+        select: "name size price tons weight image",
+      },
+      {
+        path: "portaPotty",
+        select: "name price",
+      },
+      {
+        path: "treeRemoval",
+        select: "title price",
+      },
+      {
+        path: "junkRemoval",
+        select: "title price",
+      },
+      {
+        path: "jobSite",
+        select:
+          "siteName siteAddress streetAddress city state zipCode status user company",
+      },
+      {
+        path: "leadId",
+        select:
+          "leadNumber status customerInfo estimate placementNotes serviceType dumpsterSize startDate numDays drivewayProtection createdAt",
+      },
+      {
+        path: "assignOrder",
+        populate: {
+          path: "subUserDetail",
+          select: "name phone profilePicture email",
+        },
+      },
+      {
+        path: "userIds",
+        select:
+          "name comp_name email phone profilePicture rating total_reviews location address role",
+      },
+      {
+        path: "rejected_by",
+        select:
+          "name comp_name email phone profilePicture rating total_reviews",
+      },
+      {
+        path: "accepted_by",
+        select:
+          "name comp_name email phone profilePicture rating total_reviews",
+      },
+    ];
+
+    const [orders, total] = await Promise.all([
+      Order.find(query)
+        .populate(basePopulate)
+        .sort({ _id: -1 })
+        .skip((safePage - 1) * safeLimit)
+        .limit(safeLimit)
+        .lean(),
+      Order.countDocuments(query),
+    ]);
+
+    if (!orders || orders.length === 0) {
+      return {
+        orders: [],
+        page: safePage,
+        limit: safeLimit,
+        total: 0,
+        currentPage: safePage,
+        totalPages: 0,
+      };
+    }
+
+    return {
+      orders: applyRolePricingToList(orders, PRICING_ROLES.CUSTOMER),
+      page: safePage,
+      limit: safeLimit,
+      total,
+      currentPage: safePage,
+      totalPages: Math.ceil(total / safeLimit),
+    };
+  }
   async renterStats(to_id) {
     try {
       const applications = await Order.find({ to_id })
@@ -367,25 +470,23 @@ class OrderService {
         },
       ];
 
-      if (role !== PRICING_ROLES.ADMIN) {
-        basePopulate.push(
-          {
-            path: "userIds",
-            select:
-              "name comp_name email phone profilePicture rating total_reviews location address",
-          },
-          {
-            path: "rejected_by",
-            select:
-              "name comp_name email phone profilePicture rating total_reviews",
-          },
-          {
-            path: "accepted_by",
-            select:
-              "name comp_name email phone profilePicture rating total_reviews",
-          },
-        );
-      }
+      basePopulate.push(
+        {
+          path: "userIds",
+          select:
+            "name comp_name email phone profilePicture rating total_reviews location address fcmtoken role",
+        },
+        {
+          path: "rejected_by",
+          select:
+            "name comp_name email phone profilePicture rating total_reviews",
+        },
+        {
+          path: "accepted_by",
+          select:
+            "name comp_name email phone profilePicture rating total_reviews",
+        },
+      );
 
       const [orders, total] = await Promise.all([
         Order.find(query)
@@ -2662,6 +2763,13 @@ class OrderService {
     ]);
     if (!order) {
       throw new NotFoundError("Order not found");
+    }
+    if (order.status !== "accepted") {
+      throw new BadRequestError(
+        order.status === "pending"
+          ? "This request is still waiting for a provider to accept it. Pickup can be requested once the unit is on site."
+          : "Pickup can only be requested for an active order.",
+      );
     }
 
     order.readyToPickup = true;

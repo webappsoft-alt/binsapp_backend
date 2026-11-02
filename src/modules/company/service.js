@@ -783,6 +783,7 @@ class CompanyService {
         .populate("portaPotty")
         .populate("jobSite")
         .populate("to_id", "name comp_name phone email image")
+        .populate("userIds", "name comp_name image rating")
         .populate("swapRequest.linkedDropoffOrder")
         .populate("swapRequest.linkedPickupOrder")
         .sort({ updatedAt: -1, createdAt: -1 })
@@ -815,7 +816,14 @@ class CompanyService {
         const swapStatus = order.swapRequest?.status || "none";
         const isSwapping = ["requested", "accepted", "dispatched"].includes(swapStatus);
         const isPickupReady = order.readyToPickup === true && status !== "completed";
-        const isOnWay = Boolean(order.onway || order.deliveryWorkflow?.enRouteAt);
+        const isDelivered = Boolean(
+          order.dropoffimage ||
+            order.deliveryWorkflow?.deliveredAt ||
+            ["delivered", "completed"].includes(order.deliveryWorkflow?.status),
+        );
+        // `onway` is never reset after drop-off, so a delivered unit is no longer en route.
+        const isOnWay =
+          Boolean(order.onway || order.deliveryWorkflow?.enRouteAt) && !isDelivered;
 
         if (order.jobSite?._id) {
           activeJobsiteIds.add(String(order.jobSite._id));
@@ -841,6 +849,13 @@ class CompanyService {
           return;
         }
 
+        // Still broadcast to providers (no one accepted yet) — always a request,
+        // regardless of any stale pickup / swap flags on the document.
+        if (status === "pending") {
+          columns.requested.push(order);
+          return;
+        }
+
         if (isSwapping) {
           columns.swapping.push(order);
           return;
@@ -858,11 +873,6 @@ class CompanyService {
 
         if (status === "accepted") {
           columns.active.push(order);
-          return;
-        }
-
-        if (status === "pending") {
-          columns.requested.push(order);
           return;
         }
 
@@ -918,6 +928,10 @@ class CompanyService {
           }
 
           if (action === "batch_pickup") {
+            if (order.status !== "accepted") {
+              errors.push({ orderId, error: "Pickup can only be requested for an active order" });
+              continue;
+            }
             order.readyToPickup = true;
             await order.save();
             results.push({ orderId, status: "marked_pickup_ready" });

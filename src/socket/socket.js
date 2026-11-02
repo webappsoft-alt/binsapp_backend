@@ -4879,6 +4879,16 @@ export const initSocket = (server) => {
           });
           return;
         }
+        if (order.status !== "accepted") {
+          callback({
+            success: false,
+            message:
+              order.status === "pending"
+                ? "This request is still waiting for a provider to accept it. Pickup can be requested once the unit is on site."
+                : "Pickup can only be requested for an active order.",
+          });
+          return;
+        }
         order.readyToPickup = true;
         if (!order.pickupWorkflow) {
           order.pickupWorkflow = {};

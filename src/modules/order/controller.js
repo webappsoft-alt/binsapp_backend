@@ -284,11 +284,10 @@ export const fetchrequestOrderRentee = async (req, res, next) => {
     } else {
       query.user = userId;
     }
-    const orders = await orderService.fetchrequestOrder(
+    const orders = await orderService.fetchrequestOrderRentee(
       query,
       parseInt(page),
       parseInt(limit),
-      PRICING_ROLES.CUSTOMER,
     );
     res.status(200).json(orders);
   } catch (error) {
@@ -1138,7 +1137,7 @@ export const getAdminOrderById = async (req, res, next) => {
         {
           path: "userIds",
           select:
-            "name comp_name email phone profilePicture rating total_reviews location address",
+            "name comp_name email phone profilePicture rating total_reviews location address fcmtoken role",
         },
         {
           path: "rejected_by",

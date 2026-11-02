@@ -1066,8 +1066,8 @@ router.get("/:id/live-location", getOrderLiveLocation);
  *       403:
  *         $ref: '#/components/responses/ForbiddenError'
  */
-router.get("/admin", admin, adminOrder);
-router.get("/admin/:id", admin, getAdminOrderById);
+router.get("/admin", authenticate, admin, adminOrder);
+router.get("/admin/:id", authenticate, admin, getAdminOrderById);
 
 /**
  * @swagger
@@ -1123,7 +1123,7 @@ router.get("/admin/:id", admin, getAdminOrderById);
  *       403:
  *         $ref: '#/components/responses/ForbiddenError'
  */
-router.put("/admin/cancel/:id", admin, adminCancelRequestUpdate);
+router.put("/admin/cancel/:id", authenticate, admin, adminCancelRequestUpdate);
 
 /**
  * @swagger
@@ -1162,7 +1162,7 @@ router.put("/admin/cancel/:id", admin, adminCancelRequestUpdate);
  *       403:
  *         $ref: '#/components/responses/ForbiddenError'
  */
-router.put("/admin/refund/:id", admin, adminRefunedRequestUpdate);
+router.put("/admin/refund/:id", authenticate, admin, adminRefunedRequestUpdate);
 
 /**
  * @swagger
@@ -1203,7 +1203,7 @@ router.put("/admin/refund/:id", admin, adminRefunedRequestUpdate);
  *       403:
  *         $ref: '#/components/responses/ForbiddenError'
  */
-router.put("/admin/transfer/:id", admin, adminTransferRequestUpdate);
+router.put("/admin/transfer/:id", authenticate, admin, adminTransferRequestUpdate);
 
 /**
  * @swagger
@@ -1246,7 +1246,7 @@ router.put("/admin/transfer/:id", admin, adminTransferRequestUpdate);
  *       500:
  *         description: Internal server error
  */
-router.delete("/admin/delete/:id", admin, adminDeleteOrder);
+router.delete("/admin/delete/:id", authenticate, admin, adminDeleteOrder);
 
 /**
  * @swagger
@@ -1285,7 +1285,7 @@ router.delete("/admin/delete/:id", admin, adminDeleteOrder);
  *       500:
  *         description: Internal server error
  */
-router.get("/admin/timeline/:id", admin, getOrderTimeline);
+router.get("/admin/timeline/:id", authenticate, admin, getOrderTimeline);
 
 /**
  * @swagger
