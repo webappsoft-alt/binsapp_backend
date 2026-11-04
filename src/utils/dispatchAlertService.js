@@ -199,12 +199,18 @@ export async function sendDispatchAlertToCustomer({
     logger.error("Error emitting realtime dispatch:alert socket:", err);
   }
 
-  // 3. Direct SMS Alert (via Twilio)
+  // 3. Direct SMS Alert (via Carrier Gateway)
   if (sendSms && customerPhone) {
     try {
       const smsRes = await sendSMS({
         to: customerPhone,
         body: smsContent,
+        type: "dispatch_alert",
+        metadata: {
+          alertType,
+          orderId: order._id?.toString(),
+          orderNumber: orderRef,
+        },
       });
       results.sms = smsRes;
     } catch (err) {

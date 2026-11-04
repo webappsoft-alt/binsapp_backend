@@ -22,7 +22,9 @@ export const connectMongoDB = async () => {
     logger.info(`✅ Connected to MongoDB at ${config.get("mongodb")}`);
   } catch (error) {
     logger.error("❌ MongoDB connection failed", error);
-    process.exit(1); // Exit process if DB connection fails
+    if (config.get("env") === "production") {
+      process.exit(1);
+    }
   }
 };
 

@@ -2097,6 +2097,7 @@ import {
 } from "./providerEstimates.controller.js";
 import { getAdminLiveDispatchRadar } from "./dispatchRadar.controller.js";
 import { getAdminReports } from "./reports.controller.js";
+import { getAdminCalendarOrders } from "../order/controller.js";
 
 router.get("/get-user-by-service", authenticate, admin, getUserByService);
 
@@ -2123,6 +2124,7 @@ router.get("/financials/payments", authenticate, admin, getAdminPaymentsLedgerCo
 
 // Executive Intelligence & Comprehensive Reports
 router.get("/reports", authenticate, admin, getAdminReports);
+router.get("/calendar", authenticate, admin, getAdminCalendarOrders);
 
 export default router;
 

@@ -9,6 +9,15 @@ async function check() {
     { $group: { _id: "$status", count: { $sum: 1 } } }
   ]);
   console.log("Order counts by status:", counts);
+
+  const pendingOrUnaccepted = await Order.find({
+    $or: [
+      { status: "pending" },
+      { to_id: null },
+      { reAssign: true },
+    ]
+  }).select("_id orderNumber status to_id reAssign service_type createdAt").lean();
+  console.log("Pending or unaccepted orders:", pendingOrUnaccepted);
   process.exit(0);
 }
 check();

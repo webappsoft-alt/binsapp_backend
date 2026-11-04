@@ -626,6 +626,30 @@ export const updateAdminManualReviewRequest = async (req, res, next) => {
   }
 };
 
+export const getAdminCalendarOrders = async (req, res, next) => {
+  try {
+    const { startDate, endDate, service_type, status, providerId, customerId, driverId } = req.query;
+
+    const calendarData = await orderService.getAdminCalendarOrders({
+      startDate,
+      endDate,
+      service_type,
+      status,
+      providerId,
+      customerId,
+      driverId,
+    });
+
+    res.status(200).json({
+      success: true,
+      message: "Admin calendar orders fetched successfully",
+      data: calendarData,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const getRenterCalendarOrders = async (req, res, next) => {
   try {
     const userId = req.user._id;
@@ -997,6 +1021,8 @@ export const sendTransactionInvoiceController = async (req, res, next) => {
         await sendSMS({
           to: targetPhone,
           body: smsBody,
+          type: "invoice",
+          metadata: { orderId: orderRef, reason, amount },
         });
         results.sms = true;
       } catch (err) {

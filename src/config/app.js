@@ -449,6 +449,9 @@ app.get("/assign-driver", async (req, res) => {
 // // Application Routes
 // // ========================
 app.use((req, res, next) => {
+  if (req.path.startsWith("/api/cenzo") || req.path.startsWith("/api/public/cenzo")) {
+    return next();
+  }
   const userAgent = req.headers["user-agent"];
   if (
     !userAgent ||

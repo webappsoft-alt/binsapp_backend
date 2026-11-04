@@ -3,6 +3,104 @@ import config from "../config/env.js";
 import logger from "../config/logger.js";
 import { normalizePhone } from "./phone.js";
 
+export const SMS_STATUS_CALLBACK_PATH = "/api/sms/status-callback";
+export const SMS_IN_TRANSIT_STATUSES = ["queued", "sending", "sent"];
+export const SMS_FAILED_STATUSES = ["failed", "undelivered"];
+
+// Twilio reports a few statuses our SmsLog enum doesn't have; fold them into ours.
+const TWILIO_STATUS_MAP = {
+  accepted: "queued",
+  scheduled: "queued",
+  partially_delivered: "sent",
+  read: "delivered",
+  canceled: "failed",
+};
+
+// Rank used so a late/out-of-order callback never moves a log backwards
+// (e.g. a "sent" callback arriving after "delivered").
+const STATUS_RANK = {
+  queued: 0,
+  sending: 0,
+  sent: 1,
+  mocked: 2,
+  delivered: 2,
+  undelivered: 2,
+  failed: 2,
+};
+
+export function normalizeTwilioStatus(status) {
+  const s = String(status || "").trim().toLowerCase();
+  if (!s) return null;
+  return TWILIO_STATUS_MAP[s] || (s in STATUS_RANK ? s : null);
+}
+
+/**
+ * Public URL Twilio should POST delivery receipts to. Only returned when the
+ * backend has a real public https domain configured (Twilio can't reach localhost).
+ */
+export function getSmsStatusCallbackUrl() {
+  const base = String(
+    config.get("appinfo.backendURL") || process.env.APP_BACKEND_DOMAIN || ""
+  )
+    .trim()
+    .replace(/\/+$/, "");
+  if (!/^https:\/\//i.test(base) || base.includes("api.backend.com")) return null;
+  return `${base}${SMS_STATUS_CALLBACK_PATH}`;
+}
+
+/**
+ * Write a carrier status onto the SmsLog with this SID and notify admins over the socket.
+ * Used by both the Twilio status webhook and the REST sync.
+ */
+export async function applySmsStatusUpdate({ sid, status, errorCode, errorMessage }) {
+  const next = normalizeTwilioStatus(status);
+  if (!sid || !next) return null;
+
+  const SmsLog = (await import("../models/SmsLog.js")).default;
+  const current = await SmsLog.findOne({ sid }).select("status").lean();
+  if (!current) return null;
+
+  const currentRank = STATUS_RANK[current.status] ?? 0;
+  if (current.status !== next && STATUS_RANK[next] < currentRank) {
+    return current;
+  }
+
+  const updated = await SmsLog.findOneAndUpdate(
+    { sid },
+    {
+      status: next,
+      errorCode: errorCode ? String(errorCode) : null,
+      errorMessage: errorMessage || null,
+    },
+    { new: true }
+  ).lean();
+
+  if (updated && current.status !== updated.status) {
+    emitSmsStatusToAdmins(updated).catch(() => {});
+  }
+  return updated;
+}
+
+async function emitSmsStatusToAdmins(log) {
+  const { io } = await import("../socket/socket.js");
+  if (!io) return;
+  const User = (await import("../models/User.js")).default;
+  const admins = await User.find({ $or: [{ type: "admin" }, { role: "admin" }] })
+    .select("_id")
+    .lean();
+  const payload = {
+    _id: log._id,
+    sid: log.sid,
+    status: log.status,
+    errorCode: log.errorCode,
+    errorMessage: log.errorMessage,
+    updatedAt: log.updatedAt,
+  };
+  for (const a of admins) {
+    io.to(`user_${a._id.toString()}`).emit("sms-status-updated", payload);
+  }
+}
+
 /**
  * Sends a direct SMS message using the Twilio REST API.
  * Gracefully handles sandbox/unverified numbers and dev environments without crashing.
@@ -90,6 +188,12 @@ export async function sendSMS({
       // Explicitly bypass Twilio SMS Pumping / Carrier risk filtering for trusted transactional alerts
       p.append("RiskCheck", "disable");
 
+      // Ask Twilio to POST delivery receipts back so SmsLog.status leaves "sent"
+      const statusCallback = getSmsStatusCallbackUrl();
+      if (statusCallback) {
+        p.append("StatusCallback", statusCallback);
+      }
+
       // Attach MMS picture for destinations that support it (US/Canada with phone number sender)
       if (mediaUrl && fromVal && fromVal.startsWith("+")) {
         p.append("MediaUrl", mediaUrl);
@@ -162,7 +266,7 @@ export async function sendSMS({
     }
 
     const sid = res.data?.sid || null;
-    const twilioStatus = res.data?.status || "sent";
+    const twilioStatus = normalizeTwilioStatus(res.data?.status) || "sent";
 
     if (logEntry) {
       await logEntry.updateOne({
@@ -229,23 +333,17 @@ export async function syncTwilioMessageStatus(sid) {
     const errorMessage = res.data?.error_message || null;
 
     // Update in database if SmsLog exists
+    let log = null;
     try {
-      const SmsLog = (await import("../models/SmsLog.js")).default;
-      await SmsLog.findOneAndUpdate(
-        { sid },
-        {
-          status: freshStatus,
-          errorCode,
-          errorMessage,
-        }
-      );
+      log = await applySmsStatusUpdate({ sid, status: freshStatus, errorCode, errorMessage });
     } catch (dbErr) {
       // Non-blocking
     }
 
     return {
       success: true,
-      status: freshStatus,
+      status: log?.status || normalizeTwilioStatus(freshStatus) || freshStatus,
+      log,
       errorCode,
       errorMessage,
       data: res.data,

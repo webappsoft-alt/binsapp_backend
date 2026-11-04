@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { getOpenAIClient } from "../../utils/salesEmbedding.js";
 import { getCheckoutSession } from "./tools/checkoutToken.js";
 import SalesLead from "../../models/SalesLead.js";
 import SalesConversation from "../../models/SalesConversation.js";
@@ -308,5 +309,53 @@ router.delete("/conversations/:sessionId", optionalAuthenticate, deleteSession);
  */
 router.delete("/history", optionalAuthenticate, clearAllChatHistory);
 router.delete("/conversations", optionalAuthenticate, clearAllChatHistory);
+
+/**
+ * @swagger
+ * /api/sales-agent/tts:
+ *   post:
+ *     summary: Studio-quality natural OpenAI ChatGPT voice generation (MP3)
+ *     tags: [Sales Agent Public]
+ */
+router.post("/tts", async (req, res, next) => {
+  try {
+    const { text, voice = "nova" } = req.body || {};
+    if (!text || typeof text !== "string") {
+      return res.status(400).json({ success: false, message: "Text is required" });
+    }
+
+    const clean = text
+      .replace(/!\[.*?\]\(.*?\)/g, "")
+      .replace(/\[(.*?)\]\(.*?\)/g, "$1")
+      .replace(/```[\s\S]*?```/g, "")
+      .replace(/`([^`]+)`/g, "$1")
+      .replace(/[#*~_\-]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    if (!clean) {
+      return res.status(400).json({ success: false, message: "No speakable text" });
+    }
+
+    const allowedVoices = ["nova", "shimmer", "alloy", "echo", "fable", "onyx"];
+    const chosenVoice = allowedVoices.includes(voice) ? voice : "nova";
+
+    const openai = getOpenAIClient();
+    const mp3 = await openai.audio.speech.create({
+      model: "tts-1",
+      voice: chosenVoice,
+      input: clean.slice(0, 4096),
+    });
+
+    const buffer = Buffer.from(await mp3.arrayBuffer());
+    res.setHeader("Content-Type", "audio/mpeg");
+    res.setHeader("Content-Length", buffer.length);
+    res.setHeader("Cache-Control", "public, max-age=86400");
+    return res.end(buffer);
+  } catch (error) {
+    logger.error("OpenAI TTS error:", error);
+    next(error);
+  }
+});
 
 export default router;

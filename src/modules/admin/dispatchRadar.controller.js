@@ -48,6 +48,7 @@ export async function getAdminLiveDispatchRadar(req, res) {
 
     // Always fetch live KPI counts
     const [
+      pendingAcceptanceCount,
       dropsScheduledCount,
       activeOnSiteCount,
       pickupsPendingCount,
@@ -55,6 +56,9 @@ export async function getAdminLiveDispatchRadar(req, res) {
       cancelledCount,
       activeProvidersList,
     ] = await Promise.all([
+      Order.countDocuments({
+        status: "pending",
+      }),
       Order.countDocuments({
         status: { $in: ["driver_assigned", "out_for_delivery"] },
       }),
@@ -83,9 +87,14 @@ export async function getAdminLiveDispatchRadar(req, res) {
       }),
     ]);
 
-    const totalActive = dropsScheduledCount + activeOnSiteCount + pickupsPendingCount;
+    const totalActive =
+      pendingAcceptanceCount +
+      dropsScheduledCount +
+      activeOnSiteCount +
+      pickupsPendingCount;
     const radarStats = {
       totalActive,
+      pendingAcceptanceCount,
       dropsScheduledCount,
       activeOnSiteCount,
       pickupsPendingCount,
@@ -97,7 +106,9 @@ export async function getAdminLiveDispatchRadar(req, res) {
     // If Table View requested, perform server-side paginated query
     if (viewMode === "table") {
       let statusQuery = {};
-      if (statusTab === "drops") {
+      if (statusTab === "pending" || statusTab === "unaccepted") {
+        statusQuery = { status: "pending" };
+      } else if (statusTab === "drops") {
         statusQuery = { status: { $in: ["driver_assigned", "out_for_delivery"] } };
       } else if (statusTab === "active") {
         statusQuery = { status: { $in: ["in_progress", "accepted"] } };
@@ -112,6 +123,7 @@ export async function getAdminLiveDispatchRadar(req, res) {
         statusQuery = {
           status: {
             $in: [
+              "pending",
               "accepted",
               "in_progress",
               "driver_assigned",
@@ -131,7 +143,7 @@ export async function getAdminLiveDispatchRadar(req, res) {
       const finalTableQuery = andClauses.length > 1 ? { $and: andClauses } : andClauses[0];
 
       const orderFields =
-        "_id orderNumber order_id service category status amount total total_price price address city user to_id owner createdAt updatedAt driver size dumbster dustbin portaPotty";
+        "_id orderNumber order_id service category status amount total total_price price address city user to_id owner createdAt updatedAt driver size dumbster dustbin portaPotty service_type userIds start_date payment_type";
 
       const [tableOrders, totalTableOrders] = await Promise.all([
         Order.find(finalTableQuery)
@@ -152,6 +164,11 @@ export async function getAdminLiveDispatchRadar(req, res) {
         if (order.to_id && !order.owner) {
           order.owner = order.to_id;
         }
+        const rawNum =
+          order.orderNumber ||
+          order.order_id ||
+          (order._id ? String(order._id).slice(-6).toUpperCase() : "");
+        order.orderNumber = String(rawNum).replace(/^#+/, "").trim();
       });
 
       const totalPages = totalTableOrders === 0 ? 0 : Math.ceil(totalTableOrders / limit);
@@ -172,6 +189,7 @@ export async function getAdminLiveDispatchRadar(req, res) {
     }
 
     // Default: Board View (Kanban / Swiper boards with ALL records in stages without pagination)
+    const pendingBaseQuery = { status: "pending" };
     const activeBaseQuery = {
       status: {
         $in: [
@@ -186,6 +204,9 @@ export async function getAdminLiveDispatchRadar(req, res) {
     const completedBaseQuery = { status: "completed" };
     const cancelledBaseQuery = { status: "cancelled" };
 
+    const pendingFilter = searchCondition
+      ? { $and: [pendingBaseQuery, searchCondition] }
+      : pendingBaseQuery;
     const activeFilter = searchCondition
       ? { $and: [activeBaseQuery, searchCondition] }
       : activeBaseQuery;
@@ -197,9 +218,19 @@ export async function getAdminLiveDispatchRadar(req, res) {
       : cancelledBaseQuery;
 
     const boardFields =
-      "_id orderNumber order_id service category status amount total total_price price address city user to_id owner createdAt updatedAt driver size dumbster dustbin portaPotty";
+      "_id orderNumber order_id service category status amount total total_price price address city user to_id owner createdAt updatedAt driver size dumbster dustbin portaPotty service_type userIds start_date payment_type";
 
-    const [activeOrders, completedOrders, cancelledOrders] = await Promise.all([
+    const [pendingOrders, activeOrders, completedOrders, cancelledOrders] = await Promise.all([
+      Order.find(pendingFilter)
+        .select(boardFields)
+        .populate("user", "name email phone role")
+        .populate("to_id", "name email phone comp_name role")
+        .populate("dumbster", "size")
+        .populate("dustbin", "size")
+        .populate("portaPotty", "size")
+        .sort({ createdAt: -1 })
+        .limit(50)
+        .lean(),
       Order.find(activeFilter)
         .select(boardFields)
         .populate("user", "name email phone role")
@@ -232,14 +263,20 @@ export async function getAdminLiveDispatchRadar(req, res) {
         .lean(),
     ]);
 
-    const normalizeOwner = (order) => {
+    const normalizeOrder = (order) => {
       if (order.to_id && !order.owner) {
         order.owner = order.to_id;
       }
+      const rawNum =
+        order.orderNumber ||
+        order.order_id ||
+        (order._id ? String(order._id).slice(-6).toUpperCase() : "");
+      order.orderNumber = String(rawNum).replace(/^#+/, "").trim();
     };
-    activeOrders.forEach(normalizeOwner);
-    completedOrders.forEach(normalizeOwner);
-    cancelledOrders.forEach(normalizeOwner);
+    pendingOrders.forEach(normalizeOrder);
+    activeOrders.forEach(normalizeOrder);
+    completedOrders.forEach(normalizeOrder);
+    cancelledOrders.forEach(normalizeOrder);
 
     // Group into pipeline stages
     const dropsScheduled = [];
@@ -258,6 +295,7 @@ export async function getAdminLiveDispatchRadar(req, res) {
     });
 
     const allOrdersList = [
+      ...pendingOrders,
       ...activeOrders,
       ...completedOrders,
       ...cancelledOrders,
@@ -268,6 +306,7 @@ export async function getAdminLiveDispatchRadar(req, res) {
       data: {
         radar: radarStats,
         stages: {
+          pendingAcceptance: pendingOrders,
           dropsScheduled,
           activeOnSite,
           pickupsPending,

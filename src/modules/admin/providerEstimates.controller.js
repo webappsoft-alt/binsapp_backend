@@ -18,11 +18,25 @@ export async function getAdminProviderEstimates(req, res) {
     const filter = {};
 
     if (status && status !== "all") {
-      filter.status = status;
+      if (status === "accepted" || status === "converted") {
+        filter.status = { $in: ["estimate_accepted", "converted", "accepted"] };
+      } else {
+        filter.status = status;
+      }
     }
 
     if (serviceType && serviceType !== "all") {
-      filter.serviceType = serviceType;
+      if (/dumpster|dumbster/i.test(serviceType)) {
+        filter.serviceType = { $regex: /dumbster|dumpster/i };
+      } else if (/porta/i.test(serviceType)) {
+        filter.serviceType = { $regex: /porta/i };
+      } else if (/junk/i.test(serviceType)) {
+        filter.serviceType = { $regex: /junk/i };
+      } else if (/tree/i.test(serviceType)) {
+        filter.serviceType = { $regex: /tree/i };
+      } else {
+        filter.serviceType = serviceType;
+      }
     }
 
     if (providerId) {
@@ -41,43 +55,57 @@ export async function getAdminProviderEstimates(req, res) {
       ];
     }
 
-    const [leads, total, totalAll, pendingCount, sentCount, acceptedCount, convertedCount, sumAccepted] =
-      await Promise.all([
-        ProviderLead.find(filter)
-          .populate("provider", "name email phone comp_name address city state zip")
-          .populate("customer", "name email phone")
-          .populate("dumpster", "size title price")
-          .populate("order", "order_id status total_price")
-          .sort({ createdAt: -1 })
-          .skip(skip)
-          .limit(limit)
-          .lean(),
-        ProviderLead.countDocuments(filter),
-        ProviderLead.countDocuments({}),
-        ProviderLead.countDocuments({ status: "pending" }),
-        ProviderLead.countDocuments({ status: "estimate_sent" }),
-        ProviderLead.countDocuments({ status: "estimate_accepted" }),
-        ProviderLead.countDocuments({ status: "converted" }),
-        ProviderLead.aggregate([
-          {
-            $match: {
-              status: { $in: ["estimate_accepted", "converted"] },
+    const [
+      leads,
+      total,
+      totalAll,
+      pendingCount,
+      sentCount,
+      acceptedCount,
+      convertedCount,
+      dumpsterCount,
+      portaPottyCount,
+      junkRemovalCount,
+      treeRemovalCount,
+      sumAccepted,
+    ] = await Promise.all([
+      ProviderLead.find(filter)
+        .populate("provider", "name email phone comp_name profilePicture address city state zip rating avgRating")
+        .populate("customer", "name email phone profilePicture address")
+        .populate("dumpster", "size title price")
+        .populate("order", "order_id status total_price")
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      ProviderLead.countDocuments(filter),
+      ProviderLead.countDocuments({}),
+      ProviderLead.countDocuments({ status: "pending" }),
+      ProviderLead.countDocuments({ status: "estimate_sent" }),
+      ProviderLead.countDocuments({ status: "estimate_accepted" }),
+      ProviderLead.countDocuments({ status: "converted" }),
+      ProviderLead.countDocuments({ serviceType: { $regex: /dumbster|dumpster/i } }),
+      ProviderLead.countDocuments({ serviceType: { $regex: /porta/i } }),
+      ProviderLead.countDocuments({ serviceType: { $regex: /junk/i } }),
+      ProviderLead.countDocuments({ serviceType: { $regex: /tree/i } }),
+      ProviderLead.aggregate([
+        {
+          $match: {
+            status: { $in: ["estimate_accepted", "converted"] },
+          },
+        },
+        {
+          $group: {
+            _id: null,
+            totalValue: {
+              $sum: { $ifNull: ["$estimate.estimatedPrice", 0] },
             },
           },
-          {
-            $group: {
-              _id: null,
-              totalValue: {
-                $sum: { $ifNull: ["$estimate.estimatedPrice", 0] },
-              },
-            },
-          },
-        ]),
-      ]);
+        },
+      ]),
+    ]);
 
     const acceptedTotal = acceptedCount + convertedCount;
-    const conversionRate =
-      totalAll > 0 ? Math.round((acceptedTotal / totalAll) * 100) : 0;
     const totalPipelineValue = sumAccepted?.[0]?.totalValue || 0;
 
     return res.status(200).json({
@@ -95,8 +123,11 @@ export async function getAdminProviderEstimates(req, res) {
           pending: pendingCount,
           estimateSent: sentCount,
           accepted: acceptedTotal,
+          dumpster: dumpsterCount,
+          portaPotty: portaPottyCount,
+          junkRemoval: junkRemovalCount,
+          treeRemoval: treeRemovalCount,
           totalRevenue: totalPipelineValue,
-          conversionRate: `${conversionRate}%`,
         },
       },
     });
@@ -116,8 +147,8 @@ export async function getAdminProviderEstimateById(req, res) {
   try {
     const { id } = req.params;
     const lead = await ProviderLead.findById(id)
-      .populate("provider", "name email phone comp_name address city state zip rating avgRating")
-      .populate("customer", "name email phone address")
+      .populate("provider", "name email phone comp_name profilePicture address city state zip rating avgRating")
+      .populate("customer", "name email phone profilePicture address")
       .populate("dumpster")
       .populate("order")
       .lean();

@@ -9,6 +9,7 @@ import notificationRoutes from "./notification/routes.js";
 import ratingRoutes from "./rating/routes.js";
 import chatRoutes from "./chat/routes.js";
 import adminRoutes from "./admin/routes.js";
+import { smsStatusCallback } from "./admin/smsLogs.controller.js";
 import supportRoutes from "./support/routes.js";
 import assignOrderRoutes from "./assign_order/routes.js";
 import templateRoutes from "./template/routes.js";
@@ -21,6 +22,7 @@ import publicReviewRoutes from "./public_reviews/routes.js";
 import publicSalesAgentRoutes from "./sales_agent/public.routes.js";
 import binsProvidersRoutes from "./bins_providers/routes.js";
 import providerLeadsRoutes from "./provider_leads/routes.js";
+import cenzoRoutes from "./cenzo/routes.js";
 import builderOfferRoutes, {
   companyBuilderOfferRouter,
   adminBuilderOfferRouter,
@@ -186,6 +188,9 @@ app.use("/conversations", chatRoutes);
 // catch-all /admin and /company routers. Those parent routers apply
 // `admin` middleware to unmatched paths, which incorrectly 403'd
 // company builder-offer creates as "Admin access required".
+// Twilio delivery-receipt webhook: public (signature-checked), so it must sit
+// outside the auth-guarded /admin router.
+app.post("/sms/status-callback", smsStatusCallback);
 app.use("/admin/builder-offers", adminBuilderOfferRouter);
 app.use("/company/builder-offers", companyBuilderOfferRouter);
 app.use("/admin", adminRoutes);
@@ -205,6 +210,8 @@ app.use("/public/bins-providers", binsProvidersRoutes);
 app.use("/bins-providers", binsProvidersRoutes);
 app.use("/public/provider-leads", providerLeadsRoutes);
 app.use("/provider-leads", providerLeadsRoutes);
+app.use("/public/cenzo", cenzoRoutes);
+app.use("/cenzo", cenzoRoutes);
 // Image Uploading & HEIC Conversion
 const HEIC_FTYP_BRANDS = new Set([
   "heic",
@@ -339,7 +346,7 @@ const handleImageUpload = async (req, res) => {
               .jpeg({ quality: 80 })
               .toFile(outPath);
             uploadPath = outPath;
-            fs.unlink(heicOutPath, () => {});
+            fs.unlink(heicOutPath, () => { });
           } catch (sharpErr) {
             console.warn(
               "upload-image: sharp resize on converted HEIC failed, using direct jpeg:",
@@ -403,8 +410,8 @@ const handleImageUpload = async (req, res) => {
 
     const publicUrl = `https://storage.googleapis.com/${bucket.name}/${destination}`;
 
-    fs.unlink(file.path, () => {});
-    if (uploadPath !== file.path) fs.unlink(uploadPath, () => {});
+    fs.unlink(file.path, () => { });
+    if (uploadPath !== file.path) fs.unlink(uploadPath, () => { });
 
     res.json({ image: publicUrl });
   } catch (error) {
@@ -473,8 +480,8 @@ app.post("/upload-file", handleSingleUpload("file"), async (req, res) => {
 
     const publicUrl = `https://storage.googleapis.com/${bucket.name}/${destination}`;
 
-    fs.unlink(file.path, () => {});
-    if (uploadPath !== file.path) fs.unlink(uploadPath, () => {});
+    fs.unlink(file.path, () => { });
+    if (uploadPath !== file.path) fs.unlink(uploadPath, () => { });
 
     res.json({ file: publicUrl });
   } catch (error) {

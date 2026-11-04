@@ -1,6 +1,66 @@
 import SmsLog from "../../models/SmsLog.js";
-import { sendSMS, syncTwilioMessageStatus } from "../../utils/sendSMS.js";
+import crypto from "crypto";
+import config from "../../config/env.js";
+import {
+  sendSMS,
+  syncTwilioMessageStatus,
+  applySmsStatusUpdate,
+  getSmsStatusCallbackUrl,
+  SMS_IN_TRANSIT_STATUSES,
+  SMS_FAILED_STATUSES,
+} from "../../utils/sendSMS.js";
 import logger from "../../config/logger.js";
+
+// Only ask Twilio about recent in-transit messages; older ones won't change anymore.
+const LIVE_SYNC_WINDOW_MS = 3 * 24 * 60 * 60 * 1000;
+
+const escapeRegex = (str) => String(str).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+function parseDate(value, endOfDay = false) {
+  if (!value) return null;
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return null;
+  // Plain YYYY-MM-DD → cover the whole day
+  if (/^\d{4}-\d{2}-\d{2}$/.test(String(value))) {
+    if (endOfDay) d.setUTCHours(23, 59, 59, 999);
+    else d.setUTCHours(0, 0, 0, 0);
+  }
+  return d;
+}
+
+/**
+ * Pull fresh carrier status for in-transit rows on the current page and
+ * patch them in place, so a load/refresh always shows the real status.
+ */
+async function syncInTransitLogs(logs) {
+  const cutoff = Date.now() - LIVE_SYNC_WINDOW_MS;
+  const pending = logs.filter(
+    (l) =>
+      l.sid &&
+      /^(SM|MM)/.test(l.sid) &&
+      SMS_IN_TRANSIT_STATUSES.includes(l.status) &&
+      new Date(l.createdAt).getTime() >= cutoff
+  );
+  if (!pending.length) return 0;
+
+  const results = await Promise.allSettled(
+    pending.map((l) => syncTwilioMessageStatus(l.sid))
+  );
+  let changed = 0;
+  results.forEach((r, i) => {
+    const fresh = r.status === "fulfilled" && r.value?.success ? r.value.log : null;
+    if (fresh && fresh.status !== pending[i].status) {
+      Object.assign(pending[i], {
+        status: fresh.status,
+        errorCode: fresh.errorCode,
+        errorMessage: fresh.errorMessage,
+        updatedAt: fresh.updatedAt,
+      });
+      changed++;
+    }
+  });
+  return changed;
+}
 
 /**
  * Get paginated SMS logs with search, status filtering, and overall delivery stats
@@ -11,41 +71,96 @@ export async function getAdminSmsLogs(req, res) {
     const limit = Math.max(1, Math.min(100, parseInt(req.query.limit) || 20));
     const skip = (page - 1) * limit;
 
-    const { status, type, search } = req.query;
+    const { status, type, search, startDate, endDate } = req.query;
+    const shouldSync = req.query.sync !== "false";
 
-    const filter = {};
+    const conditions = [];
 
     if (status && status !== "all") {
-      filter.status = status;
+      // Tabs are status groups: "sent" = in transit, "failed" = failed/undelivered
+      if (status === "sent" || status === "in_transit") {
+        conditions.push({ status: { $in: SMS_IN_TRANSIT_STATUSES } });
+      } else if (status === "failed") {
+        conditions.push({ status: { $in: SMS_FAILED_STATUSES } });
+      } else {
+        conditions.push({ status });
+      }
+    }
+
+    const from = parseDate(startDate);
+    const to = parseDate(endDate, true);
+    if (from || to) {
+      const createdAt = {};
+      if (from) createdAt.$gte = from;
+      if (to) createdAt.$lte = to;
+      conditions.push({ createdAt });
     }
 
     if (type && type !== "all") {
-      filter.type = type;
+      if (type === "dispatch_alert") {
+        conditions.push({
+          $or: [
+            { type: { $in: ["dispatch_alert", "driver_on_way", "dropoff_done"] } },
+            {
+              body: {
+                $regex:
+                  "dumpster has been|driver is on the way|truck arriving|placement|driver has arrived|collect the dumpster",
+                $options: "i",
+              },
+            },
+          ],
+        });
+      } else if (type === "order_reminder") {
+        conditions.push({
+          $or: [
+            { type: "order_reminder" },
+            {
+              body: {
+                $regex: "reminder|complete your order|order place",
+                $options: "i",
+              },
+            },
+          ],
+        });
+      } else {
+        conditions.push({ type });
+      }
     }
 
     if (search && search.trim()) {
-      const q = search.trim();
-      filter.$or = [
-        { to: { $regex: q, $options: "i" } },
-        { from: { $regex: q, $options: "i" } },
-        { sid: { $regex: q, $options: "i" } },
-        { body: { $regex: q, $options: "i" } },
-      ];
+      const q = escapeRegex(search.trim());
+      conditions.push({
+        $or: [
+          { to: { $regex: q, $options: "i" } },
+          { from: { $regex: q, $options: "i" } },
+          { sid: { $regex: q, $options: "i" } },
+          { body: { $regex: q, $options: "i" } },
+        ],
+      });
     }
 
-    const [logs, total, totalAll, deliveredCount, failedCount, sentCount] =
-      await Promise.all([
-        SmsLog.find(filter)
-          .sort({ createdAt: -1 })
-          .skip(skip)
-          .limit(limit)
-          .lean(),
-        SmsLog.countDocuments(filter),
-        SmsLog.countDocuments({}),
-        SmsLog.countDocuments({ status: "delivered" }),
-        SmsLog.countDocuments({ status: { $in: ["failed", "undelivered"] } }),
-        SmsLog.countDocuments({ status: { $in: ["sent", "queued", "sending"] } }),
-      ]);
+    const filter = conditions.length > 0 ? { $and: conditions } : {};
+
+    const [logs, total] = await Promise.all([
+      SmsLog.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+      SmsLog.countDocuments(filter),
+    ]);
+
+    if (shouldSync) {
+      try {
+        await syncInTransitLogs(logs);
+      } catch (syncErr) {
+        logger.warn("getAdminSmsLogs live sync failed:", syncErr?.message);
+      }
+    }
+
+    // Counted after the sync so the cards match the rows just refreshed
+    const [totalAll, deliveredCount, failedCount, sentCount] = await Promise.all([
+      SmsLog.countDocuments({}),
+      SmsLog.countDocuments({ status: "delivered" }),
+      SmsLog.countDocuments({ status: { $in: SMS_FAILED_STATUSES } }),
+      SmsLog.countDocuments({ status: { $in: SMS_IN_TRANSIT_STATUSES } }),
+    ]);
 
     const deliveryRate =
       totalAll > 0 ? Math.round((deliveredCount / totalAll) * 100) : 100;
@@ -221,5 +336,52 @@ export async function syncAdminSmsStatus(req, res) {
       success: false,
       message: error.message || "Failed to sync SMS status",
     });
+  }
+}
+
+/**
+ * Twilio StatusCallback webhook (public, no auth). Twilio POSTs form fields
+ * MessageSid / MessageStatus / ErrorCode every time a message changes state.
+ */
+export async function smsStatusCallback(req, res) {
+  try {
+    const authToken =
+      config.get("twilio.authToken") || process.env.TWILIO_AUTH_TOKEN;
+    const signature = req.get("X-Twilio-Signature");
+    const callbackUrl = getSmsStatusCallbackUrl();
+
+    if (authToken && callbackUrl) {
+      const params = req.body || {};
+      const payload = Object.keys(params)
+        .sort()
+        .reduce((acc, key) => acc + key + params[key], callbackUrl);
+      const expected = crypto
+        .createHmac("sha1", authToken)
+        .update(Buffer.from(payload, "utf-8"))
+        .digest("base64");
+      const valid =
+        signature &&
+        signature.length === expected.length &&
+        crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
+      if (!valid) {
+        logger.warn("smsStatusCallback: invalid Twilio signature");
+        return res.status(403).send("Invalid signature");
+      }
+    }
+
+    const { MessageSid, SmsSid, MessageStatus, SmsStatus, ErrorCode, ErrorMessage } =
+      req.body || {};
+    await applySmsStatusUpdate({
+      sid: MessageSid || SmsSid,
+      status: MessageStatus || SmsStatus,
+      errorCode: ErrorCode,
+      errorMessage: ErrorMessage,
+    });
+
+    return res.status(204).end();
+  } catch (error) {
+    logger.error("smsStatusCallback error:", error);
+    // 200 so Twilio doesn't retry-storm on our own errors
+    return res.status(200).end();
   }
 }

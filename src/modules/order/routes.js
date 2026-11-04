@@ -25,6 +25,7 @@ import {
   getAdminManualReviewRequest,
   updateAdminManualReviewRequest,
   getRenterCalendarOrders,
+  getAdminCalendarOrders,
   getRenterReportsAnalytics,
   getRenterCustomersDirectory,
   getRenterCustomerDetail,
@@ -1066,6 +1067,7 @@ router.get("/:id/live-location", getOrderLiveLocation);
  *       403:
  *         $ref: '#/components/responses/ForbiddenError'
  */
+router.get("/admin/calendar", authenticate, admin, getAdminCalendarOrders);
 router.get("/admin", authenticate, admin, adminOrder);
 router.get("/admin/:id", authenticate, admin, getAdminOrderById);
 

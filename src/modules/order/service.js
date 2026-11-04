@@ -1583,6 +1583,264 @@ class OrderService {
     }
   }
 
+  async getAdminCalendarOrders({
+    startDate,
+    endDate,
+    service_type,
+    status,
+    providerId,
+    customerId,
+    driverId,
+  }) {
+    try {
+      const query = {};
+
+      if (providerId && providerId !== "all") {
+        query.to_id = providerId;
+      }
+      if (customerId && customerId !== "all") {
+        query.user = customerId;
+      }
+
+      if (status && status !== "all") {
+        query.status = status;
+      }
+
+      if (service_type && service_type !== "all") {
+        if (
+          service_type.toLowerCase() === "dumpster" ||
+          service_type.toLowerCase() === "dumbster"
+        ) {
+          query.service_type = { $in: ["Dumbster", "Dumpster"] };
+        } else {
+          query.service_type = new RegExp("^" + service_type + "$", "i");
+        }
+      }
+
+      if (startDate || endDate) {
+        const start = startDate ? new Date(startDate) : new Date(0);
+        const end = endDate ? new Date(endDate) : new Date("2100-01-01");
+        end.setHours(23, 59, 59, 999);
+
+        query.$or = [
+          {
+            start_date: { $lte: end },
+            $or: [
+              { end_date: { $gte: start } },
+              { end_date: null },
+              { end_date: { $exists: false } },
+            ],
+          },
+          {
+            createdAt: { $gte: start, $lte: end },
+          },
+        ];
+      }
+
+      const orders = await Order.find(query)
+        .populate([
+          { path: "user", select: "name email phone avatar profilePicture cus_id" },
+          { path: "to_id", select: "name comp_name email phone avatar profilePicture" },
+          "dumbster",
+          "dustbin",
+          "portaPotty",
+          "treeRemoval",
+          "junkRemoval",
+          "company",
+          {
+            path: "assignOrder",
+            populate: {
+              path: "subUserDetail",
+              select: "name phone avatar profilePicture status",
+            },
+          },
+        ])
+        .sort({ start_date: 1, createdAt: 1 })
+        .lean();
+
+      let filteredOrders = orders;
+      if (driverId && driverId !== "all") {
+        filteredOrders = orders.filter((o) => {
+          const subId =
+            o.assignOrder?.subUserDetail?._id?.toString() ||
+            o.assignOrder?.subUserDetail?.toString();
+          return subId === driverId.toString();
+        });
+      }
+
+      const pricedOrders = applyRolePricingToList(
+        filteredOrders || [],
+        PRICING_ROLES.ADMIN,
+      );
+
+      const now = new Date();
+
+      const calendarEvents = pricedOrders.map((order) => {
+        const sDate = order.start_date || order.createdAt;
+        const eDate = order.end_date || sDate;
+
+        const startObj = new Date(sDate);
+        const endObj = new Date(eDate);
+        const diffTime = Math.abs(endObj - startObj);
+        const calculatedDays = Math.max(
+          1,
+          Math.ceil(diffTime / (1000 * 60 * 60 * 24)),
+        );
+        const numDays = order.num_days || calculatedDays;
+
+        const isMultiDay =
+          order.service_type === "Dumbster" ||
+          order.service_type === "Dumpster" ||
+          order.service_type === "Porta Potty" ||
+          endObj.toDateString() !== startObj.toDateString();
+
+        const isOverdue = order.status === "accepted" && endObj < now;
+
+        let daysRemaining = 0;
+        if (order.status === "accepted") {
+          const diffRemaining = endObj - now;
+          daysRemaining = Math.ceil(diffRemaining / (1000 * 60 * 60 * 24));
+        }
+
+        let serviceType = order.service_type;
+        if (serviceType === "Dumbster") serviceType = "Dumpster";
+
+        let assetTitle = serviceType;
+        if (serviceType === "Dumpster") {
+          assetTitle = order.dumbster?.size
+            ? `${order.dumbster.size} Yard Dumpster`
+            : "Dumpster Rental";
+          if (order.dustbin?.bin_number || order.dustbin?.dustbin_number) {
+            assetTitle += ` (#${order.dustbin.bin_number || order.dustbin.dustbin_number})`;
+          }
+        } else if (serviceType === "Porta Potty") {
+          assetTitle = order.portaPotty?.type
+            ? `${order.portaPotty.type} Porta Potty`
+            : "Porta Potty Rental";
+        } else if (serviceType === "Junk Removal") {
+          assetTitle = order.junkRemoval?.name || "Junk Removal Job";
+        } else if (serviceType === "Tree Removal") {
+          assetTitle = order.treeRemoval?.name || "Tree Removal Job";
+        }
+
+        return {
+          id: order._id,
+          orderId: order._id,
+          order_no: order.order_no || order._id,
+          title: `${assetTitle} — ${order.user?.name || "Customer"}`,
+          assetTitle,
+          service_type: serviceType,
+          status: order.status,
+          startDate: sDate,
+          endDate: eDate,
+          validDate: eDate,
+          numDays,
+          isMultiDay,
+          isOverdue,
+          daysRemaining,
+          readyToPickup: Boolean(order.readyToPickup),
+          amount: order.amount || order.price || 0,
+          price: order.price || order.amount || 0,
+          address: order.address || "",
+          location: order.location,
+          placement: {
+            location: order.placementLocation || "",
+            note: order.placementNote || "",
+            gateCode: order.gateAccessCode || "",
+            surface: order.drivewaySurfaceType || "",
+            accessInstructions: order.accessInstructions || "",
+            placementPhotos: order.placementPhotos || [],
+          },
+          customer: {
+            id: order.user?._id,
+            name: order.user?.name || "Customer",
+            phone: order.user?.phone || "",
+            email: order.user?.email || "",
+            avatar: order.user?.avatar || "",
+            profilePicture: order.user?.profilePicture || "",
+          },
+          provider: {
+            id: order.to_id?._id,
+            name: order.to_id?.comp_name || order.to_id?.name || "Provider",
+            comp_name: order.to_id?.comp_name || "",
+            phone: order.to_id?.phone || "",
+            email: order.to_id?.email || "",
+            avatar: order.to_id?.avatar || "",
+            profilePicture: order.to_id?.profilePicture || "",
+          },
+          driver: order.assignOrder?.subUserDetail
+            ? {
+                id: order.assignOrder.subUserDetail._id,
+                name: order.assignOrder.subUserDetail.name,
+                phone: order.assignOrder.subUserDetail.phone,
+                avatar: order.assignOrder.subUserDetail.avatar,
+                profilePicture: order.assignOrder.subUserDetail.profilePicture,
+                status: order.assignOrder.status,
+                assignmentType: order.assignOrder.assignmentType,
+              }
+            : null,
+          assignOrderId: order.assignOrder?._id || null,
+          details: {
+            dumpster: order.dumbster,
+            portaPotty: order.portaPotty,
+            junkRemoval: order.junkRemoval,
+            treeRemoval: order.treeRemoval,
+            dustbin: order.dustbin,
+            category: order.category,
+            subCategory: order.subCategory,
+          },
+          createdAt: order.createdAt,
+          rawOrder: order,
+        };
+      });
+
+      const totalOrders = calendarEvents.length;
+      const activeRentals = calendarEvents.filter(
+        (e) => e.status === "accepted",
+      ).length;
+      const completedCount = calendarEvents.filter(
+        (e) => e.status === "completed",
+      ).length;
+      const pendingCount = calendarEvents.filter(
+        (e) => e.status === "pending",
+      ).length;
+      const overdueCount = calendarEvents.filter((e) => e.isOverdue).length;
+
+      const todayStr = now.toISOString().split("T")[0];
+      const dropoffsToday = calendarEvents.filter((e) => {
+        const s = new Date(e.startDate).toISOString().split("T")[0];
+        return s === todayStr;
+      }).length;
+
+      const pickupsToday = calendarEvents.filter((e) => {
+        const en = new Date(e.endDate).toISOString().split("T")[0];
+        return en === todayStr && e.status === "accepted";
+      }).length;
+
+      const totalRevenue = calendarEvents.reduce(
+        (acc, item) => acc + (Number(item.amount) || Number(item.price) || 0),
+        0,
+      );
+
+      return {
+        events: calendarEvents,
+        summary: {
+          totalOrders,
+          activeRentals,
+          completedCount,
+          pendingCount,
+          overdueCount,
+          dropoffsToday,
+          pickupsToday,
+          totalRevenue,
+        },
+      };
+    } catch (error) {
+      logger.error("getAdminCalendarOrders error", error);
+      throw error;
+    }
+  }
+
   async getRenterReportsAnalytics({
     userId,
     timeRange = "30d",
@@ -3008,6 +3266,12 @@ class OrderService {
         const smsRes = await sendSMS({
           to: customer.phone,
           body: smsBody,
+          type: "order_reminder",
+          metadata: {
+            customerId: customer._id?.toString(),
+            customerName,
+            providerName,
+          },
         });
         results.sms = Boolean(smsRes?.success);
         smsDetails = smsRes;

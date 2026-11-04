@@ -16,7 +16,12 @@ import {
   releaseSessionToAI,
   recordVisitorHandoffRequest,
 } from "./handoff.service.js";
-import { generateStepActionCard, getLiveDumpsterSizes, getUnfinishedBookingSummary } from "../funnel/index.js";
+import {
+  generateStepActionCard,
+  getLiveDumpsterSizes,
+  getUnfinishedBookingSummary,
+  updateSessionFunnelState,
+} from "../funnel/index.js";
 import { logger } from "../../../config/logger.js";
 
 let salesNamespaceInstance = null;
@@ -413,7 +418,7 @@ export function initSalesAgentSocket(io) {
       } catch (err) {
         logger.error(`Error initializing sales session ${sessionId}:`, err);
         if (typeof callback === "function") {
-          callback({ success: false, error: err.message });
+          callback({ success: false, message: err.message, error: err.message });
         }
       }
     });
