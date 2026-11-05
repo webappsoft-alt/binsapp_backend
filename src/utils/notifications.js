@@ -3,9 +3,7 @@ import Notification from "../models/Notification.js";
 import logger from "../config/logger.js";
 import { sendAdminEmailToUser } from "./emailservice.js";
 import { sendEmail } from "./emailHelper.js";
-// `io` is a live binding set once initSocket() runs; it stays null in contexts
-// without a socket server (e.g. worker threads), so emits are guarded below.
-import { io } from "../socket/socket.js";
+import { emitNewNotification } from "./notificationEvents.js";
 export const sendNotification = async ({
   user = "",
   to_id = "",
@@ -49,28 +47,9 @@ export const sendNotification = async ({
 
       await notification.save();
 
-      // Real-time badge: push the new notification to the recipient's socket
-      // room so the app can update the Notifications tab without a refresh.
-      if (io && to_id) {
-        try {
-          io.to(`user_${to_id.toString()}`).emit("new:notification", {
-            _id: notification._id,
-            title: notification.title,
-            body: notification.description,
-            description: notification.description,
-            type: notification.type,
-            seen: notification.seen,
-            createdAt: notification.createdAt,
-            order: notification.order,
-            request: notification.request,
-            dustbin: notification.dustbin,
-            isImportant: isImportant,
-            metadata: notification.metadata || null,
-          });
-        } catch (emitErr) {
-          logger.error("new:notification emit failed", emitErr);
-        }
-      }
+      // Real-time badge: push the new notification (plus the recipient's unread
+      // total) to their socket room so apps update without a refresh.
+      await emitNewNotification(notification);
     }
 
     if (email) {

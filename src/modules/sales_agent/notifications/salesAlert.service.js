@@ -1,6 +1,7 @@
 import Notification from "../../../models/Notification.js";
 import User from "../../../models/User.js";
 import { io } from "../../../socket/socket.js";
+import { emitNewNotification } from "../../../utils/notificationEvents.js";
 import { sendEmail } from "../../../utils/emailHelper.js";
 import { logger } from "../../../config/logger.js";
 import config from "../../../config/env.js";
@@ -97,6 +98,7 @@ export async function dispatchSalesAlert(lead, alertType = "NEW_LEAD") {
       });
 
       await notification.save();
+      await emitNewNotification(notification);
     }
   } catch (dbErr) {
     logger.warn("Saving notification document failed:", dbErr?.message);

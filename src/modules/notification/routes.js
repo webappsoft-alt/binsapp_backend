@@ -1,6 +1,12 @@
 import express from "express";
 
-import { getAllNotifications, checkSeenNotifications, deleteNotification } from "./controller.js";
+import {
+  getAllNotifications,
+  checkSeenNotifications,
+  deleteNotification,
+  markNotificationsSeen,
+  getUnreadNotificationCount,
+} from "./controller.js";
 import { authenticate, admin } from "../../middlewares/auth.js";
 import { validate } from "../../middlewares/validate.js";
 const router = express.Router();
@@ -95,6 +101,29 @@ router.get('/all', getAllNotifications);
  *         description: Internal server error
  */
 router.get('/check-seen', checkSeenNotifications);
+
+/**
+ * @swagger
+ * /api/notification/unread-count:
+ *   get:
+ *     summary: Unread notification total for the badge
+ *     tags: [Notification]
+ *     security:
+ *       - BearerAuth: []
+ */
+router.get('/unread-count', getUnreadNotificationCount);
+
+/**
+ * @swagger
+ * /api/notification/seen:
+ *   put:
+ *     summary: Mark specific notifications as seen
+ *     description: Body `{ ids: string[] }` (max 200). Returns the new unread total and pushes it over the socket (`notification:count`).
+ *     tags: [Notification]
+ *     security:
+ *       - BearerAuth: []
+ */
+router.put('/seen', markNotificationsSeen);
 
 /**
  * @swagger

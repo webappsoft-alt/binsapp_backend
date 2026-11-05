@@ -224,16 +224,20 @@ export async function sendAdminSms(req, res) {
     // Also record an in-app notification for admin so it appears in the notification center
     try {
       const Notification = (await import("../../models/Notification.js")).default;
+      const { emitNewNotification } = await import("../../utils/notificationEvents.js");
       const adminId = req.user?._id;
       if (adminId) {
-        await Notification.create({
+        const created = await Notification.create({
           user: adminId,
           to_id: adminId,
           type: "admin-noti",
+          // `title` is required by the schema — without it this record was never saved
+          title: "SMS dispatched",
           description: `Direct SMS dispatched to ${to} via ${result.from || "BINSAPP"} (Status: ${result.status || "sent"})`,
           isImportant: false,
           seen: false,
         });
+        await emitNewNotification(created);
       }
     } catch (notifErr) {
       logger.warn("Failed to create admin notification for test SMS:", notifErr);

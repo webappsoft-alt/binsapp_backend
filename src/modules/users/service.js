@@ -321,6 +321,10 @@ export async function updateUser(userId, updates = {}) {
   //   throw new BadRequestError("No fields provided for update");
   // }
 
+  // Signup completes here (OTP / Google create a "temp" user first) — remember the role
+  // before applying updates so we can tell the admin about brand-new owners/customers.
+  const roleBefore = effectiveRole(user);
+
   Object.assign(user, updates);
   if (!user.role && updates.type !== user.role) {
     user.role = updates.type;
@@ -347,7 +351,72 @@ export async function updateUser(userId, updates = {}) {
     );
   }
 
+  const roleAfter = effectiveRole(user);
+  if (!REGISTERED_ROLES.includes(roleBefore) && REGISTERED_ROLES.includes(roleAfter)) {
+    notifyAdminOfNewRegistration(user, roleAfter).catch((err) =>
+      logger.error("Admin new-registration notification failed", err),
+    );
+  }
+
   return user;
+}
+
+const REGISTERED_ROLES = ["renter", "rentee"];
+
+// `role` defaults to "temp"; some flows only set `type`, so fall back to it (matches the
+// `$or: [{ role }, { type }]` lookups used across the codebase).
+function effectiveRole(user) {
+  if (user?.role && user.role !== "temp") return user.role;
+  return user?.type || user?.role || "temp";
+}
+
+/** In-app (DB + socket) and push notification to the admin when a new owner/customer signs up. */
+async function notifyAdminOfNewRegistration(user, role) {
+  const adminUser = await User.findOne({
+    $or: [{ type: "admin" }, { role: "admin" }],
+  })
+    .select("fcmtoken")
+    .lean();
+  if (!adminUser) return;
+
+  const roleLabel = role === "renter" ? "Dumpster Owner" : "Customer";
+  const who =
+    user.name ||
+    user.comp_name ||
+    user.legal_business_name ||
+    user.email ||
+    user.phone ||
+    user._id.toString();
+  const title = `New ${roleLabel} Registered`;
+  const description = `${who} just signed up as a ${roleLabel.toLowerCase()}${
+    user.phone && who !== user.phone ? ` (${user.phone})` : ""
+  }.`;
+
+  // Live toast for an open admin panel (the stored notification + badge go out via sendNotification)
+  if (io) {
+    io.to(`user_${adminUser._id.toString()}`).emit("admin-noti", {
+      success: true,
+      title,
+      message: description,
+      type: "user",
+      userId: user._id,
+    });
+  }
+
+  return sendNotification({
+    user: user._id,
+    to_id: adminUser._id,
+    type: "user",
+    title,
+    description,
+    fcmtoken: adminUser.fcmtoken || "",
+    email: "",
+    metadata: {
+      action: "user_registered",
+      role,
+      userId: user._id.toString(),
+    },
+  });
 }
 
 async function notifyUserOfServiceApplicationPending(user, appliedServices) {

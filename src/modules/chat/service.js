@@ -222,6 +222,8 @@ export async function getConversationMessages(
       before = null,
       after = null,
       sort = "desc",
+      includeDays = false,
+      tzOffset = 0,
     } = options;
     const adjustedLimit = Math.min(parseInt(limit), 100);
 
@@ -261,6 +263,22 @@ export async function getConversationMessages(
 
     // Extract and sort messages
     let messages = conversationWithMessages.messages || [];
+
+    // Whole-conversation date info (before any before/after filter) for the jump-to-date picker.
+    // tzOffset is the client's Date#getTimezoneOffset() in minutes, so days match the viewer's calendar.
+    let firstMessageAt = null;
+    let lastMessageAt = null;
+    const messageDays = new Set();
+    messages.forEach((msg) => {
+      const ts = msg?.timestamp ? new Date(msg.timestamp) : null;
+      if (!ts || isNaN(ts.getTime())) return;
+      if (!firstMessageAt || ts < firstMessageAt) firstMessageAt = ts;
+      if (!lastMessageAt || ts > lastMessageAt) lastMessageAt = ts;
+      if (includeDays) {
+        messageDays.add(new Date(ts.getTime() - tzOffset * 60000).toISOString().slice(0, 10));
+      }
+    });
+
     await Message.updateMany(
       {
         conversationId: conversation_Id._id,
@@ -309,6 +327,9 @@ export async function getConversationMessages(
       conversationInfo: {
         id: conversationWithMessages._id,
         participants: conversationWithMessages.participants.length,
+        firstMessageAt,
+        lastMessageAt,
+        ...(includeDays ? { messageDays: [...messageDays].sort() } : {}),
       },
     };
   } catch (error) {

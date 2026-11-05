@@ -276,6 +276,14 @@ userSchema.pre("save", function () {
     this.currentLocation.coordinates[1] = Number(this.currentlat) || 0;
     this.currentLocation.coordinates[0] = Number(this.currentlng) || 0;
   }
+
+  // The schema defaults currentLocation.type to "Point" but gives no coordinates; the 2dsphere
+  // index rejects a Point without them ("Can't extract geo keys"), which broke creating new
+  // users (e.g. the temp user in send-otp). Always store a valid point, like `location`.
+  const currentCoords = this.currentLocation?.coordinates;
+  if (!Array.isArray(currentCoords) || currentCoords.length !== 2) {
+    this.currentLocation = { type: "Point", coordinates: [0, 0] };
+  }
 });
 
 function generateAuthToken(_id, type) {

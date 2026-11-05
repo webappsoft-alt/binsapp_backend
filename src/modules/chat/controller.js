@@ -157,6 +157,9 @@ export async function getMessages(req, res) {
       includeSystem,
       includeDeleted,
       sort,
+      // Optional: list of local calendar days that have messages (for the jump-to-date picker)
+      includeDays: req.query.includeDays === "true",
+      tzOffset: Number.isFinite(Number(req.query.tzOffset)) ? Number(req.query.tzOffset) : 0,
     });
 
     // Handle service errors
@@ -168,8 +171,8 @@ export async function getMessages(req, res) {
       });
     }
 
-    // Set cache headers for performance
-    res.set("Cache-Control", "private, max-age=60, stale-while-revalidate=30");
+    // Chat must always be fresh — a cached response hides messages sent in the last minute.
+    res.set("Cache-Control", "no-store");
 
     // Successful response
     return res.status(200).json({
@@ -324,8 +327,8 @@ export async function getMessagesByAdmin(req, res, next) {
       });
     }
 
-    // Set cache headers for performance
-    res.set("Cache-Control", "private, max-age=60, stale-while-revalidate=30");
+    // Chat must always be fresh — a cached response hides messages sent in the last minute.
+    res.set("Cache-Control", "no-store");
 
     // Successful response
     return res.status(200).json({
