@@ -218,3 +218,52 @@ export const declineEstimateController = async (req, res, next) => {
     next(error);
   }
 };
+
+
+/**
+ * Provider endpoint: Create a lead manually
+ * POST /api/provider-leads/provider/manual
+ */
+export const createManualProviderLeadController = async (req, res, next) => {
+  try {
+    const providerId = req.user._id;
+    const {
+      customerId,
+      customerInfo,
+      serviceType,
+      dumpsterSize,
+      projectType,
+      startDate,
+      numDays,
+      placementNotes,
+      drivewayProtection,
+      source,
+      initialEstimate,
+      autoCreateCustomer,
+    } = req.body;
+
+    const lead = await providerLeadsService.createProviderManualLead({
+      providerId,
+      customerId,
+      customerInfo,
+      serviceType,
+      dumpsterSize,
+      projectType,
+      startDate,
+      numDays,
+      placementNotes,
+      drivewayProtection,
+      source,
+      initialEstimate,
+      autoCreateCustomer: autoCreateCustomer !== false,
+    });
+
+    res.status(201).json({
+      success: true,
+      message: "Lead created successfully.",
+      data: lead,
+    });
+  } catch (error) {
+    next(error);
+  }
+};

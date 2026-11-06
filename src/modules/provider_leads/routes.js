@@ -7,6 +7,7 @@ import {
   submitEstimateController,
   acceptEstimateController,
   declineEstimateController,
+  createManualProviderLeadController,
 } from "./controller.js";
 import { authenticate, optionalAuthenticate } from "../../middlewares/auth.js";
 
@@ -22,6 +23,7 @@ router.post("/", authenticate, createDirectLeadController);
  * Provider: Get leads received by authenticated provider
  * GET /api/provider-leads/provider
  */
+router.post("/provider/manual", authenticate, createManualProviderLeadController);
 router.get("/provider", authenticate, getProviderLeadsController);
 
 /**

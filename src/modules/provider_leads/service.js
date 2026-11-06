@@ -1,3 +1,5 @@
+import { normalizePhone, phoneLookupVariants } from "../../utils/phone.js";
+import { sendAdminEmailToUser } from "../../utils/emailservice.js";
 import mongoose from "mongoose";
 import ProviderLead from "../../models/ProviderLead.js";
 import Order from "../../models/Order.js";
@@ -827,6 +829,161 @@ class ProviderLeadsService {
 
     return lead;
   }
+
+
+  /**
+   * Provider manually creates a lead (Direct entry, Phone inquiry, Profile view, Referral)
+   */
+  async createProviderManualLead({
+    providerId,
+    customerId = null,
+    customerInfo,
+    serviceType = "Dumbster",
+    dumpsterSize = "20",
+    projectType = "General Cleanout",
+    startDate = null,
+    numDays = 3,
+    placementNotes = "",
+    drivewayProtection = true,
+    source = "from_provider",
+    initialEstimate = null,
+    autoCreateCustomer = true,
+  }) {
+    if (!providerId) {
+      throw new BadRequestError("Provider ID is required.");
+    }
+
+    const provider = await User.findById(providerId);
+    if (!provider) {
+      throw new NotFoundError("Provider account not found.");
+    }
+
+    let customerUser = null;
+    if (customerId) {
+      customerUser = await User.findById(customerId);
+    }
+
+    const rawPhone = customerInfo?.phone ? String(customerInfo.phone).trim() : "";
+    const cleanPhone = rawPhone ? normalizePhone(rawPhone) : "";
+    const cleanEmail = customerInfo?.email ? String(customerInfo.email).trim().toLowerCase() : "";
+
+    if (!customerUser && (cleanPhone || cleanEmail)) {
+      const variants = cleanPhone ? phoneLookupVariants(cleanPhone) : [];
+      if (variants.length > 0) {
+        customerUser = await User.findOne({ phone: { $in: variants } });
+      }
+      if (!customerUser && cleanEmail) {
+        customerUser = await User.findOne({ email: cleanEmail });
+      }
+    }
+
+    // Auto-create customer if does not exist
+    if (!customerUser && autoCreateCustomer && customerInfo?.name && cleanPhone) {
+      try {
+        customerUser = new User({
+          name: customerInfo.name.trim(),
+          email: cleanEmail || undefined,
+          phone: cleanPhone,
+          comp_name: customerInfo.comp_name || "",
+          address: customerInfo.address || "",
+          city: customerInfo.city || "",
+          state: customerInfo.state || "",
+          zip: customerInfo.zip || "",
+          role: "rentee",
+          status: "online",
+        });
+        await customerUser.save();
+
+        const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
+        const loginUrl = `${frontendUrl}/auth`;
+        const providerTitle = provider.comp_name || provider.name || "BINS Dumpster";
+
+        // Direct SMS
+        const smsBody = `Hello ${customerUser.name}, your account has been registered by ${providerTitle} on BINS Dumpster! Log in here: ${loginUrl} using phone ${cleanPhone}.`;
+        sendSMS({ to: cleanPhone, body: smsBody }).catch((err) =>
+          logger.warn("Manual lead customer SMS failed:", err)
+        );
+
+        // Welcome Email
+        if (cleanEmail) {
+          const html = `
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 12px; background: #ffffff;">
+              <h2 style="color: #047857;">Welcome to BINS Dumpster</h2>
+              <p>Hello <strong>${customerUser.name}</strong>,</p>
+              <p>Your service provider <strong>${providerTitle}</strong> has created a new service request and customer account for you.</p>
+              <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; margin: 16px 0;">
+                <p style="margin: 0 0 4px; font-size: 13px;">Login Phone: <strong>${cleanPhone}</strong></p>
+                ${cleanEmail ? `<p style="margin: 0; font-size: 13px;">Login Email: <strong>${cleanEmail}</strong></p>` : ''}
+              </div>
+              <p><a href="${loginUrl}" style="background: #059669; color: #fff; padding: 10px 20px; border-radius: 6px; text-decoration: none; font-weight: bold; display: inline-block;">Log In To Customer Portal</a></p>
+            </div>
+          `;
+          sendAdminEmailToUser(cleanEmail, `New Account Created by ${providerTitle}`, html).catch((err) =>
+            logger.warn("Manual lead customer email failed:", err)
+          );
+        }
+      } catch (err) {
+        logger.warn("Auto customer creation in manual lead failed:", err);
+      }
+    }
+
+    const finalCustomerInfo = {
+      name: customerInfo?.name || customerUser?.name || "Customer",
+      email: cleanEmail || customerUser?.email || "pending@bins.app",
+      phone: cleanPhone || customerUser?.phone || "",
+      address: customerInfo?.address || customerUser?.address || "",
+      city: customerInfo?.city || customerUser?.city || "",
+      state: customerInfo?.state || customerUser?.state || "",
+      zip: customerInfo?.zip || customerUser?.zip || "",
+      coordinates: customerInfo?.coordinates || undefined,
+    };
+
+    const hasEstimate = Boolean(Number(initialEstimate?.estimatedPrice || 0) > 0);
+    const status = hasEstimate ? "estimate_sent" : "pending";
+
+    const lead = new ProviderLead({
+      provider: provider._id,
+      customer: customerUser?._id || null,
+      customerInfo: finalCustomerInfo,
+      serviceType: serviceType || "Dumbster",
+      dumpsterSize: String(dumpsterSize || "20"),
+      projectType: projectType || "General Cleanout",
+      startDate: startDate ? new Date(startDate) : null,
+      numDays: Number(numDays || 3),
+      placementNotes: String(placementNotes || "").trim(),
+      drivewayProtection: Boolean(drivewayProtection),
+      status,
+      source: source || "from_provider",
+      estimate: hasEstimate
+        ? {
+            estimatedPrice: Number(initialEstimate.estimatedPrice),
+            includedTons: Number(initialEstimate.includedTons || 2),
+            rentalDays: Number(initialEstimate.rentalDays || numDays || 3),
+            extraDayPrice: Number(initialEstimate.extraDayPrice || 20),
+            overagePerTon: Number(initialEstimate.overagePerTon || 75),
+            deliveryFee: Number(initialEstimate.deliveryFee || 0),
+            validUntil: initialEstimate.validUntil
+              ? new Date(initialEstimate.validUntil)
+              : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+            providerNotes: String(initialEstimate.providerNotes || "").trim(),
+            sentAt: new Date(),
+          }
+        : undefined,
+    });
+
+    await lead.save();
+
+    // Socket notification
+    try {
+      io.to(`user_${provider._id.toString()}`).emit("new_provider_lead", lead);
+      io.to(`user_${provider._id.toString()}`).emit("leads:count_update", { type: "increment" });
+    } catch (sockErr) {
+      logger.warn("Socket event for manual lead failed:", sockErr);
+    }
+
+    return lead;
+  }
+
 }
 
 export default new ProviderLeadsService();

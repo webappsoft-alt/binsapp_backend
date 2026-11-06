@@ -43,7 +43,10 @@ import JobSites from "../../models/JobSites.js";
 import { AssignOrder, SubUserDetail } from "../../models/AssignOrder.js";
 import Conversation from "../../models/Conversation.js";
 import Message from "../../models/Message.js";
+import ProviderLead from "../../models/ProviderLead.js";
 import { sendSMS } from "../../utils/sendSMS.js";
+import { normalizePhone, phoneLookupVariants } from "../../utils/phone.js";
+import { sendAdminEmailToUser } from "../../utils/emailservice.js";
 
 class OrderService {
   async fetchrequestOrder(
@@ -2944,6 +2947,80 @@ class OrderService {
         };
       });
 
+      // Fetch provider leads & estimates associated with this customer
+      const customerEmail = (customerUser.email || "").toLowerCase().trim();
+      const leadQuery = {
+        provider: providerObjectId,
+        $or: [
+          { customer: customerObjectId },
+          ...(customerEmail ? [{ "customerInfo.email": customerEmail }] : []),
+        ],
+      };
+
+      const rawLeads = await ProviderLead.find(leadQuery)
+        .sort({ createdAt: -1 })
+        .lean();
+
+      // Separate into direct leads and sent/accepted estimates
+      const leads = [];
+      const estimates = [];
+
+      rawLeads.forEach((l) => {
+        const hasEstimate =
+          Boolean(l.estimate?.estimatedPrice > 0) ||
+          ["estimate_sent", "estimate_accepted", "converted", "declined"].includes(l.status);
+
+        const formatted = {
+          id: l._id,
+          leadNumber: l.leadNumber || String(l._id).slice(-6).toUpperCase(),
+          serviceType: l.serviceType || "Dumbster",
+          dumpsterSize: l.dumpsterSize || "20",
+          projectType: l.projectType || "General Cleanout",
+          numDays: l.numDays || 3,
+          startDate: l.startDate,
+          placementNotes: l.placementNotes || "",
+          drivewayProtection: Boolean(l.drivewayProtection),
+          status: l.status || "pending",
+          createdAt: l.createdAt,
+          estimate: l.estimate || null,
+          estimatedPrice: Number(l.estimate?.estimatedPrice || 0),
+          customerInfo: l.customerInfo || {},
+        };
+
+        if (hasEstimate) {
+          estimates.push(formatted);
+        } else {
+          leads.push(formatted);
+        }
+      });
+
+      // Construct invoices from orders
+      const invoices = enrichedOrders.map((o) => {
+        const isPaid = o.status === "completed";
+        const isCancelled = o.status === "cancelled";
+        return {
+          id: `INV-${o.orderNumber}`,
+          invoiceNumber: `INV-${o.orderNumber}`,
+          orderId: o.id,
+          orderNumber: o.orderNumber,
+          serviceType: o.serviceType,
+          amount: o.price,
+          date: o.createdAt,
+          dueDate: o.endDate || o.startDate || o.createdAt,
+          status: isPaid ? "paid" : isCancelled ? "cancelled" : "pending",
+          paymentMethod: o.paymentType || "stripe",
+          paymentId: o.paymentId,
+          address: o.address,
+        };
+      });
+
+      // Check if conversation exists
+      const conversation = await Conversation.findOne({
+        participants: { $all: [providerObjectId, customerObjectId] },
+      })
+        .select("_id lastActivity")
+        .lean();
+
       const orderCount = orders.length;
       const lastOrder = orders[0];
       const firstOrder = orders[orders.length - 1];
@@ -2991,8 +3068,16 @@ class OrderService {
           firstOrderAt: firstOrder?.createdAt,
           lastOrderAt: lastOrder?.createdAt,
           lastServiceType: lastOrder?.service_type || "Dumpster",
+          estimatesCount: estimates.length,
+          leadsCount: leads.length,
+          invoicesCount: invoices.length,
         },
         orders: enrichedOrders,
+        estimates,
+        leads,
+        invoices,
+        hasConversation: Boolean(conversation),
+        conversationId: conversation?._id || null,
       };
     } catch (error) {
       logger.error("getRenterCustomerDetail error", error);
@@ -3293,6 +3378,198 @@ class OrderService {
         email: customer.email || null,
       },
     };
+  }
+
+  async checkCustomerExists({ phone, email }) {
+    try {
+      const cleanEmail = String(email || "").trim().toLowerCase();
+      const rawPhone = String(phone || "").trim();
+      const normalizedPhone = rawPhone ? normalizePhone(rawPhone) : "";
+      const variants = normalizedPhone ? phoneLookupVariants(normalizedPhone) : [];
+
+      let matchedUser = null;
+      let matchField = null;
+
+      if (variants.length > 0) {
+        matchedUser = await User.findOne({ phone: { $in: variants } })
+          .select("name email phone comp_name address city state zip role createdAt")
+          .lean();
+        if (matchedUser) {
+          matchField = "phone";
+        }
+      }
+
+      if (!matchedUser && cleanEmail) {
+        matchedUser = await User.findOne({ email: cleanEmail })
+          .select("name email phone comp_name address city state zip role createdAt")
+          .lean();
+        if (matchedUser) {
+          matchField = "email";
+        }
+      }
+
+      if (matchedUser) {
+        return {
+          exists: true,
+          matchField,
+          customer: {
+            id: matchedUser._id,
+            name: matchedUser.name || matchedUser.comp_name || "Existing Customer",
+            email: matchedUser.email || "",
+            phone: matchedUser.phone || "",
+            comp_name: matchedUser.comp_name || "",
+            address: matchedUser.address || "",
+            role: matchedUser.role || "rentee",
+            memberSince: matchedUser.createdAt,
+          },
+        };
+      }
+
+      return {
+        exists: false,
+        matchField: null,
+        customer: null,
+      };
+    } catch (error) {
+      logger.error("checkCustomerExists error", error);
+      throw error;
+    }
+  }
+
+  async createRenterCustomer({
+    providerId,
+    name,
+    email,
+    phone,
+    comp_name,
+    address,
+    city,
+    state,
+    zip,
+    notes,
+    sendNotification = true,
+  }) {
+    try {
+      const cleanName = String(name || "").trim();
+      if (!cleanName) {
+        throw new BadRequestError("Customer full name is required.");
+      }
+
+      const rawPhone = String(phone || "").trim();
+      if (!rawPhone) {
+        throw new BadRequestError("Customer phone number is required.");
+      }
+
+      const normalizedPhone = normalizePhone(rawPhone);
+      const variants = phoneLookupVariants(normalizedPhone);
+
+      // Check if phone already registered
+      const phoneMatch = await User.findOne({ phone: { $in: variants } });
+      if (phoneMatch) {
+        throw new BadRequestError(
+          `An account with phone number ${normalizedPhone} already exists (${phoneMatch.name || "Customer"}).`
+        );
+      }
+
+      const cleanEmail = String(email || "").trim().toLowerCase();
+      if (cleanEmail) {
+        const emailMatch = await User.findOne({ email: cleanEmail });
+        if (emailMatch) {
+          throw new BadRequestError(
+            `An account with email ${cleanEmail} already exists (${emailMatch.name || "Customer"}).`
+          );
+        }
+      }
+
+      const provider = await User.findById(providerId).lean();
+      const providerTitle = provider?.comp_name || provider?.name || "BINS Dumpster";
+
+      // Create new rentee User
+      const newUser = new User({
+        name: cleanName,
+        email: cleanEmail || undefined,
+        phone: normalizedPhone,
+        comp_name: String(comp_name || "").trim(),
+        address: String(address || "").trim(),
+        city: String(city || "").trim(),
+        state: String(state || "").trim(),
+        zip: String(zip || "").trim(),
+        role: "rentee",
+        status: "online",
+        createdAt: new Date(),
+      });
+
+      await newUser.save();
+
+      // Notifications
+      if (sendNotification) {
+        const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
+        const loginUrl = `${frontendUrl}/auth`;
+
+        // 1. Direct SMS via Twilio
+        if (normalizedPhone) {
+          const smsBody = `Hello ${cleanName}, your customer account with ${providerTitle} has been created on BINS Dumpster! Log in to view your orders, schedules, and quotes at: ${loginUrl} using phone ${normalizedPhone}.`;
+          sendSMS({
+            to: normalizedPhone,
+            body: smsBody,
+            type: "account_created",
+            metadata: { customerId: newUser._id, providerId },
+          }).catch((smsErr) => logger.warn("createRenterCustomer SMS notification failed:", smsErr));
+        }
+
+        // 2. Email via Nodemailer
+        if (cleanEmail) {
+          const html = `
+            <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 12px; background: #ffffff;">
+              <div style="text-align: center; margin-bottom: 24px;">
+                <h2 style="color: #047857; margin: 0 0 6px;">Welcome to BINS Dumpster</h2>
+                <p style="color: #64748b; font-size: 13px; margin: 0;">Customer Account Created by ${providerTitle}</p>
+              </div>
+              <p style="font-size: 14px; color: #334155; line-height: 1.6;">Hello <strong>${cleanName}</strong>,</p>
+              <p style="font-size: 14px; color: #334155; line-height: 1.6;">
+                Your service provider <strong>${providerTitle}</strong> has registered your customer profile on the BINS Dumpster platform. You can now access your rentals, track live delivery dispatches, review quotes, and manage invoices online.
+              </p>
+              <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; margin: 20px 0;">
+                <p style="margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; font-weight: bold;">Login Details:</p>
+                <p style="margin: 0 0 4px; font-size: 13px; color: #1e293b;">• Phone Number: <strong>${normalizedPhone}</strong></p>
+                ${cleanEmail ? `<p style="margin: 0 0 4px; font-size: 13px; color: #1e293b;">• Email Address: <strong>${cleanEmail}</strong></p>` : ""}
+                <p style="margin: 0; font-size: 13px; color: #1e293b;">• Account Type: <strong>Rentee / Client</strong></p>
+              </div>
+              <div style="text-align: center; margin: 28px 0;">
+                <a href="${loginUrl}" style="background: #059669; color: #ffffff; text-decoration: none; padding: 12px 28px; border-radius: 8px; font-weight: 600; font-size: 14px; display: inline-block;">
+                  Log In To Customer Portal
+                </a>
+              </div>
+              <p style="font-size: 12px; color: #94a3b8; text-align: center; margin-top: 24px; line-height: 1.5;">
+                If you have any questions, you can contact ${providerTitle} directly or reply to this message.
+              </p>
+            </div>
+          `;
+
+          sendAdminEmailToUser(
+            cleanEmail,
+            `Your BINS Customer Account with ${providerTitle}`,
+            html,
+            "Customer Account Registration"
+          ).catch((mailErr) => logger.warn("createRenterCustomer Email notification failed:", mailErr));
+        }
+      }
+
+      return {
+        id: newUser._id,
+        name: newUser.name,
+        email: newUser.email,
+        phone: newUser.phone,
+        comp_name: newUser.comp_name,
+        address: newUser.address,
+        role: newUser.role,
+        status: newUser.status,
+        memberSince: newUser.createdAt,
+      };
+    } catch (error) {
+      logger.error("createRenterCustomer error", error);
+      throw error;
+    }
   }
 }
 

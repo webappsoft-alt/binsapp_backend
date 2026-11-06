@@ -761,6 +761,59 @@ export const sendRenterCrmFollowupController = async (req, res, next) => {
   }
 };
 
+export const checkRenterCustomerExistsController = async (req, res, next) => {
+  try {
+    const { phone, email } = req.body || req.query;
+    const result = await orderService.checkCustomerExists({ phone, email });
+    res.status(200).json({
+      success: true,
+      data: result,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const createRenterCustomerController = async (req, res, next) => {
+  try {
+    const providerId = req.user._id;
+    const {
+      name,
+      email,
+      phone,
+      comp_name,
+      address,
+      city,
+      state,
+      zip,
+      notes,
+      sendNotification,
+    } = req.body;
+
+    const customer = await orderService.createRenterCustomer({
+      providerId,
+      name,
+      email,
+      phone,
+      comp_name,
+      address,
+      city,
+      state,
+      zip,
+      notes,
+      sendNotification: sendNotification !== false,
+    });
+
+    res.status(201).json({
+      success: true,
+      message: "Customer account created successfully and welcome details sent.",
+      data: customer,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const markReadyToPickup = async (req, res, next) => {
   try {
     const { orderId, requestType, requestedByName, requestedByRole, notes } = req.body;
