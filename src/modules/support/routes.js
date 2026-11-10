@@ -4,6 +4,7 @@ import {
   createSupport,
   deleteSupport,
   getSupport,
+  getMySupportTickets,
 } from "./controller.js";
 import { authenticate, admin } from "../../middlewares/auth.js";
 import { validate } from "../../middlewares/validate.js";
@@ -107,6 +108,9 @@ router.use(authenticate);
  *         $ref: '#/components/responses/UnauthorizedError'
  */
 router.post("/", validate(createSupportSchema), createSupport);
+
+// Current user's own tickets ("My Tickets" in the provider / customer portal).
+router.get("/tickets", getMySupportTickets);
 
 /**
  * @swagger

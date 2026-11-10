@@ -58,12 +58,13 @@ export const createDirectLeadController = async (req, res, next) => {
 export const getProviderLeadsController = async (req, res, next) => {
   try {
     const providerId = req.user._id;
-    const { status, page, limit } = req.query;
+    const { status, page, limit, search } = req.query;
 
     const result = await providerLeadsService.getProviderLeads(providerId, {
       status,
       page,
       limit,
+      search,
     });
 
     res.status(200).json({
@@ -240,6 +241,7 @@ export const createManualProviderLeadController = async (req, res, next) => {
       source,
       initialEstimate,
       autoCreateCustomer,
+      unitId,
     } = req.body;
 
     const lead = await providerLeadsService.createProviderManualLead({
@@ -256,6 +258,7 @@ export const createManualProviderLeadController = async (req, res, next) => {
       source,
       initialEstimate,
       autoCreateCustomer: autoCreateCustomer !== false,
+      unitId,
     });
 
     res.status(201).json({

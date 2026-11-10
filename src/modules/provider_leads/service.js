@@ -255,11 +255,27 @@ class ProviderLeadsService {
   /**
    * Fetch leads for a specific provider
    */
-  async getProviderLeads(providerId, { status = "all", page = 1, limit = 20 } = {}) {
+  async getProviderLeads(providerId, { status = "all", page = 1, limit = 20, search = "" } = {}) {
     const query = { provider: providerId };
     if (status && status !== "all") {
       query.status = status;
     }
+    // Server-side search over lead #, customer and service fields (counts stay unfiltered).
+    const term = String(search || "").trim().slice(0, 80);
+    if (term) {
+      const rx = new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+      query.$or = [
+        { leadNumber: rx },
+        { "customerInfo.name": rx },
+        { "customerInfo.email": rx },
+        { "customerInfo.phone": rx },
+        { "customerInfo.city": rx },
+        { "customerInfo.address": rx },
+        { serviceType: rx },
+        { dumpsterSize: rx },
+      ];
+    }
+    limit = Math.min(200, Math.max(1, Number(limit) || 20));
 
     const skip = (Number(page) - 1) * Number(limit);
     const [leads, total, counts] = await Promise.all([
@@ -334,14 +350,14 @@ class ProviderLeadsService {
       lead = await ProviderLead.findById(leadId)
         .populate("provider", "name comp_name profilePicture rating total_reviews phone email address city")
         .populate("customer", "name email phone profilePicture")
-        .populate("order", "orderNumber status total_price start_date end_date to_id source");
+        .populate("order", "orderNumber status total_price start_date end_date to_id source user");
     }
 
     if (!lead) {
       lead = await ProviderLead.findOne({ leadNumber: leadId })
         .populate("provider", "name comp_name profilePicture rating total_reviews phone email address city")
         .populate("customer", "name email phone profilePicture")
-        .populate("order", "orderNumber status total_price start_date end_date to_id source");
+        .populate("order", "orderNumber status total_price start_date end_date to_id source user");
     }
 
     if (!lead) {
@@ -848,6 +864,7 @@ class ProviderLeadsService {
     source = "from_provider",
     initialEstimate = null,
     autoCreateCustomer = true,
+    unitId = null,
   }) {
     if (!providerId) {
       throw new BadRequestError("Provider ID is required.");
@@ -941,12 +958,29 @@ class ProviderLeadsService {
     const hasEstimate = Boolean(Number(initialEstimate?.estimatedPrice || 0) > 0);
     const status = hasEstimate ? "estimate_sent" : "pending";
 
+    // Optional: one of the provider's own APPROVED units (dumpster / porta potty).
+    let unit = null;
+    if (unitId && mongoose.Types.ObjectId.isValid(String(unitId))) {
+      unit = await Dustbin.findOne({
+        _id: unitId,
+        user: provider._id,
+        verify: true,
+        rejected: { $ne: true },
+      })
+        .populate("dumbster", "size")
+        .lean();
+      if (!unit) {
+        throw new BadRequestError("Pick one of your own approved units.");
+      }
+    }
+
     const lead = new ProviderLead({
       provider: provider._id,
       customer: customerUser?._id || null,
+      unit: unit?._id || null,
       customerInfo: finalCustomerInfo,
       serviceType: serviceType || "Dumbster",
-      dumpsterSize: String(dumpsterSize || "20"),
+      dumpsterSize: String(unit?.dumbster?.size || dumpsterSize || "20"),
       projectType: projectType || "General Cleanout",
       startDate: startDate ? new Date(startDate) : null,
       numDays: Number(numDays || 3),

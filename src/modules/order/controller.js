@@ -1,3 +1,4 @@
+import { sendSMS } from "../../utils/sendSMS.js";
 import OrderService from "./service.js";
 import User from "../../models/User.js";
 import Order from "../../models/Order.js";
@@ -7,6 +8,8 @@ import { PRICING_ROLES } from "../../utils/orderPricing.js";
 import { sendEmail } from "../../utils/emailHelper.js";
 import mongoose from "mongoose";
 import logger from "../../config/logger.js";
+import { RENTER_STATUS_GROUPS } from "./renterStatusGroups.js";
+import { searchProviderRecords, providerDispatchStats, dispatchLaneQuery, dispatchFilterConditions } from "./providerSearch.js";
 const orderService = new OrderService();
 
 export const fetchrequestOrder = async (req, res, next) => {
@@ -82,6 +85,42 @@ export const fetchUserrequests = async (req, res, next) => {
       PRICING_ROLES.OWNER,
     );
     res.status(200).json(orders);
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Provider portal header search: jobs, leads, estimates and customers for this provider.
+export const renterSearch = async (req, res, next) => {
+  try {
+    const data = await searchProviderRecords(req.user._id, req.query.q);
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Dispatch board stage counts (separate from the jobs list so tabs always show true totals).
+export const renterDispatchStats = async (req, res, next) => {
+  try {
+    const data = await providerDispatchStats(req.user._id, { service: req.query.service, search: req.query.search });
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// One dispatch lane, paginated (board / split view "See more").
+export const renterDispatchLane = async (req, res, next) => {
+  try {
+    const query = dispatchLaneQuery(req.user._id, String(req.query.lane || ""));
+    if (!query) return res.status(400).json({ success: false, message: "Unknown lane" });
+    const extra = await dispatchFilterConditions({ service: req.query.service, search: req.query.search });
+    if (extra.length) query.$and = [...(query.$and || []), ...extra];
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(50, Math.max(1, parseInt(req.query.limit, 10) || 10));
+    const data = await orderService.renteeOrder(query, page, limit, PRICING_ROLES.OWNER);
+    res.status(200).json({ success: true, data });
   } catch (error) {
     next(error);
   }
@@ -246,10 +285,34 @@ export const fetchRenterOrder = async (req, res, next) => {
     const userId = req.user._id;
     const { page, limit, status } = req.query;
     const query = { to_id: userId };
-    if (status == "all" || !status) {
-      query.status = { $in: ["pending", "accepted", "completed"] };
+    // Same status groups as renterStats().counts so tab lists and tab counts agree.
+    // Server-side search (order #, address, service, customer name/email/phone).
+    const search = String(req.query.search || "").trim().slice(0, 80);
+    if (search) {
+      const rx = new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+      const matchedUsers = await User.find({
+        $or: [{ name: rx }, { email: rx }, { phone: rx }, { comp_name: rx }],
+      })
+        .select("_id")
+        .limit(200)
+        .lean();
+      query.$or = [
+        { orderNumber: rx },
+        { address: rx },
+        { service_type: rx },
+        ...(matchedUsers.length ? [{ user: { $in: matchedUsers.map((u) => u._id) } }] : []),
+      ];
+    }
+
+    if (status === "deleted_customers") {
+      // Jobs whose customer has since deleted their account.
+      const customerIds = await Order.distinct("user", { to_id: userId });
+      const deletedIds = await User.find({ _id: { $in: customerIds }, status: "deleted" }).distinct("_id");
+      query.user = { $in: deletedIds };
+      query.status = { $in: RENTER_STATUS_GROUPS.all };
     } else {
-      query.status = status;
+      const group = RENTER_STATUS_GROUPS[status || "all"];
+      query.status = group ? { $in: group } : status;
     }
 
     // console.log(query, "query");
@@ -1069,9 +1132,9 @@ export const sendTransactionInvoiceController = async (req, res, next) => {
     // 3. SMS (Twilio)
     if (targetPhone) {
       try {
-        const { sendSMS } = await import("../../utils/sendSMS.js");
+        const { sendSMS: sendSMSDynamic } = await import("../../utils/sendSMS.js");
         const smsBody = `Bins & Dumpsters: Official Invoice #${orderRef} for ${amount} (${reason}) has been issued. View receipt: ${invoiceImageUrl || 'in your account'}`;
-        await sendSMS({
+        await sendSMSDynamic({
           to: targetPhone,
           body: smsBody,
           type: "invoice",
@@ -1253,6 +1316,35 @@ export const getAdminOrderById = async (req, res, next) => {
       data: order,
       order,
     });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Provider asks the customer to review a completed job: SMS with a review link.
+export const sendReviewRequestController = async (req, res, next) => {
+  try {
+    const order = await Order.findById(req.params.id).populate("user", "name phone");
+    if (!order || String(order.to_id) !== String(req.user._id)) {
+      return res.status(404).json({ success: false, message: "Job not found" });
+    }
+    if (order.status !== "completed") {
+      return res.status(400).json({ success: false, message: "Reviews can only be requested for completed jobs" });
+    }
+    const phone = order.user?.phone;
+    if (!phone) {
+      return res.status(400).json({ success: false, message: "The customer has no phone number on file" });
+    }
+    const base = (process.env.FRONTEND_URL || "https://binsapp.ai").replace(/\/$/, "");
+    const link = `${base}/rentee/orders?status=completed&orderId=${order._id}`;
+    const providerName = req.user.comp_name || req.user.name || "your provider";
+    const firstName = String(order.user?.name || "").split(" ")[0] || "there";
+    const body = `Hi ${firstName}, thanks for choosing ${providerName}! How did we do? Please leave a quick review: ${link}`;
+    const result = await sendSMS({ to: phone, body, type: "review_request", metadata: { orderId: String(order._id) } });
+    if (!result?.success) {
+      return res.status(502).json({ success: false, message: result?.message || "Could not send the SMS" });
+    }
+    res.status(200).json({ success: true, message: "Review request sent to the customer" });
   } catch (error) {
     next(error);
   }

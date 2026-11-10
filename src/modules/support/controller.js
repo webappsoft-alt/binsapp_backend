@@ -1,3 +1,4 @@
+import Support from "../../models/Support.js";
 import supportService from "./service.js";
 
 export const createSupport = async (req, res, next) => {
@@ -57,6 +58,24 @@ export const deleteSupport = async (req, res, next) => {
       success: true,
       message: "Support deleted successfully",
       data: support,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Signed-in user's own tickets (provider / customer "My Tickets").
+export const getMySupportTickets = async (req, res, next) => {
+  try {
+    const tickets = await Support.find({ user: req.user._id })
+      .sort({ _id: -1 })
+      .limit(100)
+      .select("supportId name email msg attended history createdAt updated_at")
+      .lean();
+    res.status(200).json({
+      success: true,
+      message: "Support tickets fetched successfully",
+      data: tickets,
     });
   } catch (error) {
     next(error);

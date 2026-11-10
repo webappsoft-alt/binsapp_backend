@@ -3,6 +3,9 @@ import { completeOrderSchema, renteeOrderSchema } from "./validation.js";
 import {
   fetchrequestOrder,
   renterStats,
+  renterSearch,
+  renterDispatchStats,
+  renterDispatchLane,
   renteeOrder,
   completeOrder,
   updateOnItsWay,
@@ -35,6 +38,7 @@ import {
   markReadyToPickup,
   emailOrderInvoiceController,
   sendDispatchAlertController,
+  sendReviewRequestController,
   sendTransactionInvoiceController,
   getAdminOrderById,
 } from "./controller.js";
@@ -416,6 +420,12 @@ router.get("/renter/request/:id", fetchrequestOrder);
  *         description: Internal server error
  */
 router.get("/renter/stats", renterStats);
+// Provider header search (?q=)
+router.get("/renter/search", renterSearch);
+// Provider dispatch board stage counts
+router.get("/renter/dispatch-stats", renterDispatchStats);
+// One dispatch lane, paginated (?lane=&page=&limit=)
+router.get("/renter/dispatch-lane", renterDispatchLane);
 
 /**
  * @swagger
@@ -976,6 +986,8 @@ router.put("/renter/:id/swap-request", updateSwapStatusRenter);
 router.post("/renter/:id/email-invoice", emailOrderInvoiceController);
 /** Operator sends automated/manual dispatch notification (SMS/Push) to customer. */
 router.post("/renter/:id/dispatch-alert", sendDispatchAlertController);
+// Ask the customer (SMS) to review a completed job
+router.post("/renter/:id/review-request", sendReviewRequestController);
 /** Provider dispatches multi-channel invoice & receipt (Email, SMS, In-App, Chat) */
 router.post("/renter/send-invoice-receipt", authenticate, sendTransactionInvoiceController);
 

@@ -163,6 +163,25 @@ class BinService {
     );
   }
 
+  /**
+   * Real-time hint for the provider sidebar / Equipment page: tells the owner
+   * that one of their units changed review status so counts can refresh.
+   * Sockets join the `user_<id>` room (see socket.js), so emit there.
+   */
+  _emitEquipmentStatus(dustbin, kind, status) {
+    try {
+      const ownerId = dustbin?.user?._id?.toString?.() || dustbin?.user?.toString?.();
+      if (!ownerId || !io) return;
+      io.to(`user_${ownerId}`).emit("equipment:status_update", {
+        binId: dustbin?._id?.toString?.() || null,
+        kind,
+        status,
+      });
+    } catch (err) {
+      logger.warn(`equipment:status_update emit failed: ${err?.message}`);
+    }
+  }
+
   async _verifyDumpsterReject(id, { reason, userId }) {
     const dustbin = await Dustbin.findByIdAndUpdate(
       id,
@@ -212,6 +231,7 @@ class BinService {
         "Dumpster Listing",
       ),
     });
+    this._emitEquipmentStatus(dustbin, "dumpster", "rejected");
     const updatedDustbin = await Dustbin.findById(id).populate([
       "user",
       "dumbster",
@@ -249,6 +269,7 @@ class BinService {
         "Porta Potty Listing",
       ),
     });
+    this._emitEquipmentStatus(dustbin, "porta-potty", "rejected");
 
     const updatedDustbin = await Dustbin.findById(id).populate([
       "user",
@@ -309,6 +330,7 @@ class BinService {
     await this.updateBadgeCount(dustbin.user._id.toString(), updateData);
     const userData = await this.getUserBadgeData(dustbin.user._id.toString());
     io.to(dustbin.user._id.toString()).emit("bin-approve", userData);
+    this._emitEquipmentStatus(dustbin, "dumpster", "approved");
     const udpatedbin = await Dustbin.findById(id).populate("user");
     return udpatedbin;
   }
@@ -342,6 +364,7 @@ class BinService {
       PortaPottyverifyCount: user.PortaPottyverifyCount,
       PortaPottyrejectCount: user.PortaPottyrejectCount,
     });
+    this._emitEquipmentStatus(dustbin, "porta-potty", "approved");
 
     const updatedBin = await Dustbin.findById(id).populate([
       "user",

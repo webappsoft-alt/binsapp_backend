@@ -12,6 +12,7 @@ import { io, connectedUsers } from "../../socket/socket.js";
 import { refundPayment } from "../../utils/StripePayment.js";
 import { getAddonFees, computeSplit } from "../../utils/paymentHold.js";
 import OrderTimeline from "../../models/OrderTimeline.js";
+import { RENTER_STATUS_GROUPS } from "./renterStatusGroups.js";
 import {
   buttonTemplate,
   offerAcceptedTemplate,
@@ -266,22 +267,29 @@ class OrderService {
   async renterStats(to_id) {
     try {
       const applications = await Order.find({ to_id })
-        .select("amount status price")
+        .select("amount status price user")
         .lean();
+
+      // Jobs whose customer has deleted their account (own Jobs tab).
+      const customerIds = [...new Set(applications.map((a) => String(a.user || "")).filter(Boolean))];
+      const deletedIds = new Set(
+        (await User.find({ _id: { $in: customerIds }, status: "deleted" }).distinct("_id")).map(String),
+      );
+      const deletedCustomerJobs = applications.filter(
+        (a) => deletedIds.has(String(a.user || "")) && RENTER_STATUS_GROUPS.all.includes(a.status),
+      ).length;
 
       const pendingOrdersList = applications.filter(
         (item) => item.status == "pending",
       );
-      const acceptedOrdersList = applications.filter(
-        (item) =>
-          item.status == "accepted" ||
-          item.status == "active" ||
-          item.status == "dispatched" ||
-          item.status == "en_route" ||
-          item.status == "arrived",
+      const acceptedOrdersList = applications.filter((item) =>
+        RENTER_STATUS_GROUPS.accepted.includes(item.status),
       );
       const completeOrdersList = applications.filter(
         (item) => item.status == "completed",
+      );
+      const cancelledOrdersList = applications.filter((item) =>
+        RENTER_STATUS_GROUPS.cancelled.includes(item.status),
       );
 
       const completedEarnings = completeOrdersList.reduce(
@@ -317,6 +325,20 @@ class OrderService {
         completeOrder: completeOrdersList.length,
         acceptedOrder: acceptedOrdersList.length,
         pendingOrder: pendingOrdersList.length,
+        cancelledOrder: cancelledOrdersList.length,
+        // Per-tab counts for the provider Jobs page (same groups as the list filter).
+        counts: {
+          all:
+            pendingOrdersList.length +
+            acceptedOrdersList.length +
+            completeOrdersList.length +
+            cancelledOrdersList.length,
+          pending: pendingOrdersList.length,
+          accepted: acceptedOrdersList.length,
+          completed: completeOrdersList.length,
+          cancelled: cancelledOrdersList.length,
+          deleted_customers: deletedCustomerJobs,
+        },
         totalEarning,
         completedEarnings,
         activeValue,
@@ -2646,6 +2668,10 @@ class OrderService {
               ],
             },
             compName: { $ifNull: ["$customerInfo.comp_name", ""] },
+            // Company (commercial) account vs individual customer (rentee).
+            hasCompany: { $cond: [{ $ifNull: ["$customerInfo.company", false] }, true, false] },
+            accessType: { $ifNull: ["$customerInfo.access_types", ""] },
+            accountStatus: { $ifNull: ["$customerInfo.status", ""] },
             email: { $ifNull: ["$customerInfo.email", ""] },
             phone: { $ifNull: ["$customerInfo.phone", ""] },
             profilePic: {
@@ -2701,10 +2727,8 @@ class OrderService {
           statusBadge = "Recent Active";
         }
 
-        const isCommercial =
-          Boolean(c.compName && c.compName.trim().length > 0) ||
-          c.orderCount >= 3 ||
-          c.totalSpend >= 1000;
+        // Commercial only when the customer is a company account; otherwise an individual customer.
+        const isCommercial = Boolean(c.hasCompany) || c.accessType === "company";
 
         let pitch = `Hi ${c.name}, checking in from BINS Dumpster! Need any upcoming dumpster rental or waste management services? We have units available for priority dispatch!`;
         if (svcLower.includes("junk")) {
@@ -2721,8 +2745,10 @@ class OrderService {
           id: c._id,
           name: c.name,
           compName: c.compName,
-          email: c.email,
-          phone: c.phone || "",
+          // Deleted accounts get "deleted<random>" appended to email/phone — show the original part.
+          email: String(c.email || "").replace(/deleted[A-Za-z0-9]*$/, ""),
+          phone: String(c.phone || "").replace(/deleted[A-Za-z0-9]*$/, ""),
+          isDeleted: c.accountStatus === "deleted",
           profilePic: c.profilePic,
           orderCount: c.orderCount,
           completedCount: c.completedCount,
@@ -2742,6 +2768,11 @@ class OrderService {
         };
       });
 
+      // Deleted customers (quit the platform) live in their own tab only.
+      const deletedCustomers = allEnriched.filter((c) => c.isDeleted);
+      const deletedCount = deletedCustomers.length;
+      allEnriched = allEnriched.filter((c) => !c.isDeleted);
+
       // Global CRM KPIs
       const totalCustomers = allEnriched.length;
       const followupsDueCount = allEnriched.filter((c) => c.followupDue).length;
@@ -2754,6 +2785,11 @@ class OrderService {
           : 0;
       const avgCustomerLTV =
         totalCustomers > 0 ? Math.round(totalLifetimeRev / totalCustomers) : 0;
+
+      // KPIs above always describe active customers; the Deleted tab lists only deleted ones.
+      if (tab === "deleted") {
+        allEnriched = deletedCustomers;
+      }
 
       // Filter by search query if provided
       if (search && search.trim()) {
@@ -2803,6 +2839,8 @@ class OrderService {
           followupsDueCount,
           repeatCustomersCount,
           commercialCount,
+          commercialAccountsCount: commercialCount,
+          deletedCount,
           repeatRate,
           avgCustomerLTV,
           totalLifetimeRev,
@@ -3056,7 +3094,7 @@ class OrderService {
           addresses: Array.from(addressesSet),
           statusBadge,
           daysAgo,
-          isCommercial: Boolean(customerUser.comp_name) || orderCount >= 3 || totalSpend >= 1000,
+          isCommercial: Boolean(customerUser.company) || customerUser.access_types === "company",
         },
         stats: {
           totalSpend: Math.round(totalSpend),
@@ -3250,7 +3288,8 @@ class OrderService {
     // 1. WEBSITE CHAT MESSAGE (Create/Find conversation, save Message, emit realtime socket)
     let conversation;
     let messageDoc;
-    try {
+    // channel: "chat" = in-app only, "sms" = text only, "all" = both
+    if (channel !== "sms") try {
       conversation = await Conversation.findOne({
         participants: { $all: [providerObjectId, customerObjectId] },
       });
@@ -3345,7 +3384,7 @@ class OrderService {
 
     // 3. DIRECT SMS DISPATCH
     let smsDetails = null;
-    if (customer.phone) {
+    if (customer.phone && channel !== "chat") {
       try {
         const smsBody = `${providerName}: ${cleanMessage}`;
         const smsRes = await sendSMS({

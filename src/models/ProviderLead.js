@@ -46,6 +46,12 @@ const providerLeadSchema = new mongoose.Schema(
       ref: "Dumbster",
       default: null,
     },
+    // The provider's own approved unit (dumpster or porta potty) picked for this lead.
+    unit: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Dustbin",
+      default: null,
+    },
     projectType: {
       type: String,
       default: "General Cleanout",
