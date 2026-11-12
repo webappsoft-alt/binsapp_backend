@@ -9,6 +9,7 @@ import {
   verifyBinController,
   deleteBinController,
   createBinAdminSideController,
+  getInventoryController,
 } from "./controller.js";
 import { authenticate, admin } from "../../middlewares/auth.js";
 import { validate } from "../../middlewares/validate.js";
@@ -308,6 +309,8 @@ router.post("/", authenticate, validate(createBin), createBinController);
  *         description: Internal server error
  */
 router.get("/", authenticate, getAllBinsController);
+// Provider inventory: totals, available, on service, maintenance, bookings by unit type
+router.get("/inventory", authenticate, getInventoryController);
 
 /**
  * @swagger

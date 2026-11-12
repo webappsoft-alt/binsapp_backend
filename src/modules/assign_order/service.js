@@ -35,6 +35,7 @@ import {
 } from "../../utils/orderPricing.js";
 import { sendEmail } from "../../utils/emailHelper.js";
 import mongoose from "mongoose";
+import jwt from "jsonwebtoken";
 const accountSid = process.env.TWILIO_ACCOUNT_SID;
 const authToken = process.env.TWILIO_AUTH_TOKEN;
 const serviceSid = process.env.TWILIO_SERVICE_SID;
@@ -146,25 +147,95 @@ class AssignOrderService {
   }
   async getAssignOrder(_id) {
     try {
-      const assignOrder = await AssignOrder.findOne({
-        _id,
-      }).populate([
-        "subUserDetail",
-        {
-          path: "orderId",
-          populate: {
-            path: ["user", "dumbster", "dustbin"],
+      if (!_id || _id === "undefined" || _id === "null") {
+        throw new BadRequestError("Assignment token is required");
+      }
+
+      let assignOrder = null;
+      let driver = null;
+
+      // 1. If valid Mongo ObjectId, try finding AssignOrder first
+      if (mongoose.Types.ObjectId.isValid(_id)) {
+        assignOrder = await AssignOrder.findOne({
+          _id,
+        }).populate([
+          "subUserDetail",
+          {
+            path: "orderId",
+            populate: {
+              path: ["user", "dumbster", "dustbin"],
+            },
           },
-        },
-        "assignBy",
-      ]);
-      if (!assignOrder) {
-        throw new NotFoundError("Assign Order not found");
+          "assignBy",
+        ]);
+
+        // 2. If not an AssignOrder, check if _id is a driver (SubUserDetail)
+        if (!assignOrder) {
+          driver = await SubUserDetail.findById(_id).populate("operator");
+          if (driver) {
+            // Find recent assignment for this driver
+            assignOrder = await AssignOrder.findOne({
+              subUserDetail: driver._id,
+              status: { $nin: ["cancelled"] },
+            })
+              .populate([
+                "subUserDetail",
+                {
+                  path: "orderId",
+                  populate: {
+                    path: ["user", "dumbster", "dustbin"],
+                  },
+                },
+                "assignBy",
+              ])
+              .sort({ createdAt: -1 });
+
+            if (!assignOrder) {
+              assignOrder = await AssignOrder.findOne({
+                subUserDetail: driver._id,
+              })
+                .populate([
+                  "subUserDetail",
+                  {
+                    path: "orderId",
+                    populate: {
+                      path: ["user", "dumbster", "dustbin"],
+                    },
+                  },
+                  "assignBy",
+                ])
+                .sort({ createdAt: -1 });
+            }
+          }
+        }
+      } else {
+        // Might be a raw JWT passed directly
+        try {
+          const decoded = jwt.verify(_id, config.get("jwtSecret"));
+          if (decoded) {
+            const rawSubUserId =
+              decoded.subUserDetail?._id ||
+              (typeof decoded.subUserDetail === "string" ? decoded.subUserDetail : null) ||
+              decoded.subUserId ||
+              decoded._id;
+            if (rawSubUserId && mongoose.Types.ObjectId.isValid(rawSubUserId)) {
+              driver = await SubUserDetail.findById(rawSubUserId).populate("operator");
+            }
+          }
+        } catch {
+          // not a jwt
+        }
+      }
+
+      if (!assignOrder && !driver) {
+        throw new NotFoundError("Assign Order or Driver not found");
       }
 
       // Track driver portal access & login status
+      const activeDriverDoc = assignOrder?.subUserDetail || driver;
+      const subUserId = activeDriverDoc?._id || activeDriverDoc;
       try {
-        if (!assignOrder.linkOpened) {
+        if (assignOrder && !assignOrder.linkOpened) {
           assignOrder.linkOpened = true;
           assignOrder.linkOpenedAt = new Date();
           if (!assignOrder.timeline) assignOrder.timeline = [];
@@ -175,8 +246,6 @@ class AssignOrderService {
           });
           await assignOrder.save();
         }
-        const subUserId =
-          assignOrder.subUserDetail?._id || assignOrder.subUserDetail;
         if (subUserId) {
           await SubUserDetail.findByIdAndUpdate(subUserId, {
             $set: {
@@ -191,17 +260,32 @@ class AssignOrderService {
         logger.warn("Failed to update driver login tracking:", trackErr.message);
       }
 
+      const orderIdVal =
+        assignOrder?.orderId?._id || assignOrder?.orderId || null;
+      const assignByVal =
+        assignOrder?.assignBy?._id ||
+        assignOrder?.assignBy ||
+        driver?.operator?._id ||
+        driver?.operator ||
+        null;
+
       const token = generateAccessToken({
-        _id: assignOrder._id,
-        subUserDetail: assignOrder.subUserDetail,
-        orderId: assignOrder.orderId._id,
-        assignBy: assignOrder.assignBy._id,
-        status: assignOrder.status,
+        _id: assignOrder?._id || subUserId,
+        subUserDetail: activeDriverDoc,
+        orderId: orderIdVal,
+        assignBy: assignByVal,
+        status: assignOrder?.status || "assigned",
         assignOrder: true,
       });
+
       return formatAssignOrderDetailsResponse(
         {
-          details: assignOrder,
+          details: assignOrder || {
+            _id: subUserId,
+            subUserDetail: activeDriverDoc,
+            status: "assigned",
+            orderId: null,
+          },
           token,
         },
         PRICING_ROLES.OWNER,
@@ -1527,8 +1611,8 @@ class AssignOrderService {
       }).sort({ createdAt: -1 });
 
       const link = recentAssign
-        ? `https://api.binsapp.ai/assign-driver?token=${recentAssign._id}`
-        : `https://api.binsapp.ai/assign-driver`;
+        ? `https://api.binsapp.ai/assign-driver?token=${recentAssign._id}&driverId=${driver._id}`
+        : `https://api.binsapp.ai/assign-driver?token=${driver._id}&driverId=${driver._id}`;
 
       const driverName = driver.name || "Driver";
       const smsMessage = `Hello ${driverName}, your fleet operator has sent you an access link to the BINS Driver Portal. View your route and assigned jobs here: ${link}`;

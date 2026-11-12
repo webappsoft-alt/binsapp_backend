@@ -342,6 +342,73 @@ class ProviderLeadsService {
   }
 
   /**
+   * Paginated + filtered customer leads (commercial portal quotes table).
+   * Counts are computed over the customer's full lead set so filter tabs stay accurate.
+   */
+  async getCustomerLeadsPaged({ customerId = null, email = null, page = 1, limit = 10, status = "all", search = "", hasEstimate = false } = {}) {
+    const orQuery = [];
+    if (customerId) orQuery.push({ customer: customerId });
+    if (email) orQuery.push({ "customerInfo.email": String(email).trim().toLowerCase() });
+    const pageNum = Math.max(1, Number(page) || 1);
+    const limitNum = Math.min(100, Math.max(1, Number(limit) || 10));
+    if (orQuery.length === 0) {
+      return { leads: [], total: 0, page: pageNum, limit: limitNum, totalPages: 1, counts: { all: 0 } };
+    }
+
+    const baseScope = { $or: orQuery };
+    // Estimates view: only requests the provider has priced.
+    const scope = hasEstimate ? { $and: [baseScope, { "estimate.estimatedPrice": { $gt: 0 } }] } : baseScope;
+    const query = { $and: [scope] };
+    const STATUS_GROUPS = {
+      pending: ["pending"],
+      estimate_sent: ["estimate_sent"],
+      converted: ["converted", "estimate_accepted"],
+      declined: ["declined", "cancelled"],
+    };
+    if (status && status !== "all" && STATUS_GROUPS[status]) {
+      query.$and.push({ status: { $in: STATUS_GROUPS[status] } });
+    }
+    const q = String(search || "").trim().slice(0, 80);
+    if (q) {
+      const rx = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+      const providers = await User.find({ $or: [{ name: rx }, { comp_name: rx }] }).select("_id").limit(50).lean();
+      query.$and.push({
+        $or: [
+          { leadNumber: rx },
+          { serviceType: rx },
+          { dumpsterSize: rx },
+          { projectType: rx },
+          { "customerInfo.address": rx },
+          { "customerInfo.city": rx },
+          ...(providers.length ? [{ provider: { $in: providers.map((p) => p._id) } }] : []),
+        ],
+      });
+    }
+
+    const [leads, total, grouped] = await Promise.all([
+      ProviderLead.find(query)
+        .populate("provider", "name comp_name profilePicture rating total_reviews phone address city")
+        .populate("order", "status total_price start_date end_date")
+        .sort({ createdAt: -1 })
+        .skip((pageNum - 1) * limitNum)
+        .limit(limitNum),
+      ProviderLead.countDocuments(query),
+      ProviderLead.aggregate([{ $match: scope }, { $group: { _id: "$status", n: { $sum: 1 } } }]),
+    ]);
+
+    const by = grouped.reduce((acc, r) => ({ ...acc, [r._id]: r.n }), {});
+    const counts = {
+      all: Object.values(by).reduce((a, b) => a + b, 0),
+      pending: by.pending || 0,
+      estimate_sent: by.estimate_sent || 0,
+      estimatesReady: by.estimate_sent || 0,
+      converted: (by.converted || 0) + (by.estimate_accepted || 0),
+      declined: (by.declined || 0) + (by.cancelled || 0),
+    };
+    return { leads, total, page: pageNum, limit: limitNum, totalPages: Math.ceil(total / limitNum) || 1, counts };
+  }
+
+  /**
    * Fetch single lead details
    */
   async getLeadById(leadId) {

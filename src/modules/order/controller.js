@@ -315,6 +315,24 @@ export const fetchRenterOrder = async (req, res, next) => {
       query.status = group ? { $in: group } : status;
     }
 
+    const serviceType = req.query.service_type || req.query.service;
+    if (serviceType && serviceType !== "all") {
+      const st = String(serviceType).toLowerCase();
+      if (st.includes("tree")) {
+        query.service_type = { $regex: /tree/i };
+      } else if (st.includes("junk")) {
+        query.service_type = { $regex: /junk/i };
+      } else if (st.includes("porta")) {
+        query.service_type = { $regex: /porta/i };
+      } else if (st.includes("dump") || st.includes("dumb")) {
+        query.$or = [
+          { service_type: { $regex: /dump|dumb/i } },
+          { service_type: null },
+          { service_type: { $exists: false } },
+        ];
+      }
+    }
+
     // console.log(query, "query");
     const orders = await orderService.renteeOrder(
       query,

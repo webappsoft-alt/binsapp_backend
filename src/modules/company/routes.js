@@ -27,6 +27,7 @@ import {
   batchCommercialRotationAction,
 } from "./controller.js";
 import { authenticate, admin } from "../../middlewares/auth.js";
+import { searchCompanyRecords, getCompanySidebarCounts } from "./companySearch.js";
 import { validate } from "../../middlewares/validate.js";
 const router = express.Router();
 /**
@@ -725,6 +726,26 @@ router.get("/billing", getCompanyBilling);
  * GET /api/company/overview
  */
 router.get("/overview", getCompanyOverview);
+
+/** Commercial portal header search (orders, quotes, offers, jobsites, invoices, providers). */
+router.get("/search", async (req, res, next) => {
+  try {
+    const data = await searchCompanyRecords(req.user, req.query.q);
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/** Commercial sidebar badge counts (single aggregate round trip). */
+router.get("/sidebar-counts", async (req, res, next) => {
+  try {
+    const data = await getCompanySidebarCounts(req.user);
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    next(error);
+  }
+});
 
 /**
  * Company Field Rotations & Live Dispatch Kanban

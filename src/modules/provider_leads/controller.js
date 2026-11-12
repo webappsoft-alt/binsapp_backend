@@ -86,6 +86,32 @@ export const getCustomerLeadsController = async (req, res, next) => {
     const customerId = req.user?._id;
     const email = req.query.email || req.user?.email;
 
+    // Opt-in server pagination (commercial portal table). Without `page`
+    // the legacy full-list response shape is returned unchanged.
+    if (req.query.page) {
+      const result = await providerLeadsService.getCustomerLeadsPaged({
+        customerId,
+        email,
+        page: req.query.page,
+        limit: req.query.limit,
+        status: req.query.status,
+        search: req.query.search,
+        hasEstimate: ["1", "true"].includes(String(req.query.hasEstimate || "")),
+      });
+      return res.status(200).json({
+        success: true,
+        message: "Customer leads fetched successfully",
+        data: result.leads,
+        counts: result.counts,
+        pagination: {
+          page: result.page,
+          limit: result.limit,
+          total: result.total,
+          totalPages: result.totalPages,
+        },
+      });
+    }
+
     const leads = await providerLeadsService.getCustomerLeads({
       customerId,
       email,

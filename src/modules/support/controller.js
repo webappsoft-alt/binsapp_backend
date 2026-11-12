@@ -64,18 +64,74 @@ export const deleteSupport = async (req, res, next) => {
   }
 };
 
-// Signed-in user's own tickets (provider / customer "My Tickets").
+// Signed-in user's own tickets (provider / customer "My Tickets") with separate status counts and pagination.
 export const getMySupportTickets = async (req, res, next) => {
   try {
-    const tickets = await Support.find({ user: req.user._id })
+    const { page = 1, limit = 10, status = "all", search = "" } = req.query;
+
+    const userConditions = [{ user: req.user._id }];
+    if (req.user?.email) {
+      userConditions.push({
+        email: { $regex: `^${req.user.email.trim()}$`, $options: "i" },
+      });
+    }
+    const baseUserQuery = { $or: userConditions };
+
+    // 1. Separate status counts for tabs
+    const [totalCount, openCount, resolvedCount] = await Promise.all([
+      Support.countDocuments(baseUserQuery),
+      Support.countDocuments({ ...baseUserQuery, attended: false }),
+      Support.countDocuments({ ...baseUserQuery, attended: true }),
+    ]);
+
+    // 2. Build filtered query
+    const filter = { ...baseUserQuery };
+    if (status === "open") {
+      filter.attended = false;
+    } else if (status === "resolved") {
+      filter.attended = true;
+    }
+
+    if (search && String(search).trim()) {
+      const s = String(search).trim();
+      filter.$and = filter.$and || [];
+      filter.$and.push({
+        $or: [
+          { supportId: { $regex: s, $options: "i" } },
+          { msg: { $regex: s, $options: "i" } },
+          { name: { $regex: s, $options: "i" } },
+          { email: { $regex: s, $options: "i" } },
+        ],
+      });
+    }
+
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const limitNum = Math.max(1, Math.min(100, parseInt(limit, 10) || 10));
+    const currentFilteredTotal = await Support.countDocuments(filter);
+    const totalPages = Math.max(1, Math.ceil(currentFilteredTotal / limitNum));
+
+    const tickets = await Support.find(filter)
       .sort({ _id: -1 })
-      .limit(100)
+      .skip((pageNum - 1) * limitNum)
+      .limit(limitNum)
       .select("supportId name email msg attended history createdAt updated_at")
       .lean();
+
     res.status(200).json({
       success: true,
       message: "Support tickets fetched successfully",
       data: tickets,
+      counts: {
+        all: totalCount,
+        open: openCount,
+        resolved: resolvedCount,
+      },
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total: currentFilteredTotal,
+        totalPages,
+      },
     });
   } catch (error) {
     next(error);

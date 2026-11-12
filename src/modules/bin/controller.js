@@ -245,3 +245,14 @@ export const createBinAdminSideController = async (req, res, next) => {
     next(error);
   }
 };
+
+// Provider equipment inventory summary (Equipment → Inventory view).
+export const getInventoryController = async (req, res, next) => {
+  try {
+    const { getProviderInventory } = await import("./inventory.js");
+    const data = await getProviderInventory(req.user._id, String(req.query.type || "dumpster"));
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    next(error);
+  }
+};

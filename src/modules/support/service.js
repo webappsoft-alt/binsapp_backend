@@ -17,32 +17,33 @@ class SupportService {
 
       const support = new Support({
         user: userId,
-        email,
-        msg,
-        name,
+        email: email ? String(email).trim().toLowerCase() : "",
+        msg: String(msg || "").trim(),
+        name: String(name || "").trim(),
         supportId: "SP-" + generateOTP(10),
       });
 
       await support.save();
 
       const adminUser = await User.findOne({ role: "admin" }).lean();
-      // console.log("adminUser", adminUser);
-      io.to(adminUser?._id.toString()).emit("admin-noti", {
-        success: true,
-        title: "New Support Ticket",
-        message: `A User have created a new Support ticket!`,
-        type: "support",
-      });
-      await sendNotification({
-        user: userId,
-        to_id: adminUser._id.toString(),
-        description: `A User have created a new Support ticket!`,
-        type: "support",
-        title: "New Support Ticket",
-        fcmtoken: adminUser?.fcmtoken || "",
-        email: "",
-        isImportant: true,
-      });
+      if (adminUser?._id) {
+        io.to(adminUser._id.toString()).emit("admin-noti", {
+          success: true,
+          title: "New Support Ticket",
+          message: `A User have created a new Support ticket!`,
+          type: "support",
+        });
+        sendNotification({
+          user: userId,
+          to_id: adminUser._id.toString(),
+          description: `A User have created a new Support ticket!`,
+          type: "support",
+          title: "New Support Ticket",
+          fcmtoken: adminUser?.fcmtoken || "",
+          email: "",
+          isImportant: true,
+        }).catch((err) => logger.warn("Failed to send admin push notification:", err?.message));
+      }
       return support;
     } catch (error) {
       logger.error(error);

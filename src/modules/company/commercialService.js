@@ -247,13 +247,37 @@ export async function getQuoteForUser(userId, body) {
 
 export async function listCompanyBilling(
   userId,
-  { page = 1, limit = 20, status, builderOfferId, jobsiteId } = {},
+  { page = 1, limit = 20, status, builderOfferId, jobsiteId, search } = {},
 ) {
   const company = await Company.findOne({ user: userId }).lean();
   if (!company) throw new NotFoundError("Company not found");
 
   const query = { company: company._id };
-  if (status) query.status = status;
+  if (status && status !== "all") query.status = status;
+  const searchText = String(search || "").trim().slice(0, 80);
+  if (searchText) {
+    const rx = new RegExp(searchText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+    const matchingOrders = await Order.find({
+      user: userId,
+      $or: [{ orderNumber: rx }, { address: rx }, { service_type: rx }],
+    })
+      .select("_id")
+      .limit(200)
+      .lean();
+    query.$or = [
+      { invoiceNumber: rx },
+      { "lineItems.description": rx },
+      ...(matchingOrders.length ? [{ order: { $in: matchingOrders.map((o) => o._id) } }] : []),
+    ];
+  }
+  const statusRows = await BillingRecord.aggregate([
+    { $match: { company: company._id } },
+    { $group: { _id: "$status", n: { $sum: 1 } } },
+  ]);
+  const counts = statusRows.reduce(
+    (acc, r) => ({ ...acc, [r._id]: r.n, all: acc.all + r.n }),
+    { all: 0 },
+  );
   if (builderOfferId) {
     query["metadata.builderOfferId"] = String(builderOfferId);
   }
@@ -277,6 +301,7 @@ export async function listCompanyBilling(
     const data = filtered.slice(skip, skip + limitNum);
     return {
       data,
+      counts,
       page: pageNum,
       limit: limitNum,
       total,
@@ -298,6 +323,7 @@ export async function listCompanyBilling(
 
   return {
     data,
+    counts,
     page: pageNum,
     limit: limitNum,
     total,

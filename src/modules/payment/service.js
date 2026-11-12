@@ -413,11 +413,13 @@ class PaymentService {
         .populate([
           {
             path: "order",
-            populate: {
-              path: ["dumbster", "to_id", "user"],
-            },
+            populate: [
+              { path: "dumbster" },
+              { path: "to_id" },
+              { path: "user" },
+            ],
           },
-          "user",
+          { path: "user" },
         ])
         .sort(sortCriteria)
         .limit(parsedLimit)

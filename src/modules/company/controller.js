@@ -214,6 +214,7 @@ export const getCompanyBilling = async (req, res, next) => {
       status: req.query.status,
       builderOfferId: req.query.builderOfferId || req.query.offerId,
       jobsiteId: req.query.jobsiteId || req.query.jobSiteId,
+      search: req.query.search,
     });
     res.status(200).json({
       success: true,

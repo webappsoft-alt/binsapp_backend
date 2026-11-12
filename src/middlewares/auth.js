@@ -3,6 +3,7 @@ import config from "../config/env.js";
 import { UnauthorizedError, ForbiddenError } from "../utils/apiError.js";
 import User from "../models/User.js";
 import { AssignOrder, SubUserDetail } from "../models/AssignOrder.js";
+import mongoose from "mongoose";
 
 // Fast in-memory cache for authenticated user lookups (15s TTL)
 // Eliminates redundant MongoDB User.findById queries across simultaneous dashboard requests
@@ -178,34 +179,50 @@ export const subUser = async (req, res, next) => {
 
     let subUserDoc = null;
     let activeAssignment = null;
-    // console.log("decoded", JSON.stringify(decoded, null, 2, 4));
-    // 1. Check if token contains SubUserDetail ID (New Multi-Job Flow)
-    subUserDoc = await SubUserDetail.findById(decoded.subUserDetail?._id);
-    // console.log("subUserDoc", subUserDoc);
+
+    // 1. Check if token contains SubUserDetail ID (Direct driver session or Multi-Job Flow)
+    const rawSubUserId =
+      decoded.subUserDetail?._id ||
+      (typeof decoded.subUserDetail === "string" ? decoded.subUserDetail : null) ||
+      decoded.subUserId ||
+      decoded._id;
+
+    if (rawSubUserId && mongoose.Types.ObjectId.isValid(rawSubUserId)) {
+      subUserDoc = await SubUserDetail.findById(rawSubUserId);
+    }
+
     if (subUserDoc) {
-      // Driver Identity verified. Ab relevant order determine karein:
+      // Driver Identity verified. Determine relevant active order:
       const targetOrderId =
         req.headers["x-order-id"] ||
         req.query.orderId ||
         req.body?.orderId ||
         req.params?.orderId;
-      // console.log("targetOrderId", targetOrderId);
+
       if (targetOrderId) {
-        // Specific order action
         activeAssignment = await AssignOrder.findOne({
           subUserDetail: subUserDoc._id,
           orderId: targetOrderId,
           status: { $nin: ["cancelled"] },
         });
       }
+
+      if (!activeAssignment) {
+        activeAssignment = await AssignOrder.findOne({
+          subUserDetail: subUserDoc._id,
+          status: { $nin: ["cancelled"] },
+        }).sort({ createdAt: -1 });
+      }
     } else {
       // 2. Backward Compatibility: Token me agar purani AssignOrder ID ho
-      const legacyAssignOrder = await AssignOrder.findById(
-        decoded._id,
-      ).populate("subUserDetail");
-      if (legacyAssignOrder) {
-        subUserDoc = legacyAssignOrder.subUserDetail;
-        activeAssignment = legacyAssignOrder;
+      if (decoded._id && mongoose.Types.ObjectId.isValid(decoded._id)) {
+        const legacyAssignOrder = await AssignOrder.findById(
+          decoded._id,
+        ).populate("subUserDetail");
+        if (legacyAssignOrder) {
+          subUserDoc = legacyAssignOrder.subUserDetail;
+          activeAssignment = legacyAssignOrder;
+        }
       }
     }
 
@@ -216,13 +233,12 @@ export const subUser = async (req, res, next) => {
     if (subUserDoc.status === "inactive") {
       throw new ForbiddenError("Driver account is deactivated");
     }
-    // console.log("activeAssignment", activeAssignment);
-    // console.log("subUserDoc", subUserDoc);
+
     // 3. Attach standard properties (0% breaking change for existing controllers)
     req.user = subUserDoc;
-    req.orderId = activeAssignment ? activeAssignment.orderId : null;
-    req.assignBy = decoded.assignBy;
-    req.assignOrderId = activeAssignment ? activeAssignment._id : null;
+    req.orderId = activeAssignment ? activeAssignment.orderId : (decoded.orderId || null);
+    req.assignBy = decoded.assignBy || subUserDoc.operator || subUserDoc.user;
+    req.assignOrderId = activeAssignment ? activeAssignment._id : (decoded._id || null);
     req.activeAssignment = activeAssignment;
     req.token = token;
 

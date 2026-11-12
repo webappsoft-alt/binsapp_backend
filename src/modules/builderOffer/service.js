@@ -1047,7 +1047,7 @@ export async function createOffer(userId, body = {}) {
   return publicOfferDto(offer);
 }
 
-export async function listCompanyOffers(userId, { status, page = 1, limit = 20 } = {}) {
+export async function listCompanyOffers(userId, { status, page = 1, limit = 20, search = "" } = {}) {
   const company = await getCompanyForUser(userId);
   // Pending / rejected companies can open the portal without 403s.
   if (company.status !== "approved") {
@@ -1061,8 +1061,29 @@ export async function listCompanyOffers(userId, { status, page = 1, limit = 20 }
     };
   }
   const query = { company: company._id };
-  if (status) query.status = status;
+  if (status && status !== "all") {
+    const list = String(status).split(",").map((s) => s.trim()).filter(Boolean);
+    query.status = list.length > 1 ? { $in: list } : list[0];
+  }
+  const searchText = String(search || "").trim().slice(0, 80);
+  if (searchText) {
+    const rx = new RegExp(searchText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+    query.$or = [
+      { title: rx },
+      { regionLabel: rx },
+      { serviceType: rx },
+      { "lines.siteName": rx },
+      { "lines.projectName": rx },
+      { "lines.address": rx },
+      { "lines.jobNumber": rx },
+      { "lines.poNumber": rx },
+    ];
+  }
   const skip = (Math.max(1, Number(page)) - 1) * Math.max(1, Number(limit));
+  const statusCountsPromise = BuilderOffer.aggregate([
+    { $match: { company: company._id } },
+    { $group: { _id: "$status", n: { $sum: 1 } } },
+  ]);
   const [rows, total] = await Promise.all([
     BuilderOffer.find(query)
       .sort({ createdAt: -1 })
@@ -1163,9 +1184,21 @@ export async function listCompanyOffers(userId, { status, page = 1, limit = 20 }
     return dto;
   });
 
+  const statusRows = await statusCountsPromise;
+  const counts = statusRows.reduce(
+    (acc, r) => ({ ...acc, [r._id]: r.n, all: acc.all + r.n }),
+    { all: 0 },
+  );
+
   return {
     data,
-    pagination: { page: Number(page), limit: Number(limit), total },
+    counts,
+    pagination: {
+      page: Number(page),
+      limit: Number(limit),
+      total,
+      totalPages: Math.ceil(total / Math.max(1, Number(limit))) || 1,
+    },
   };
 }
 
