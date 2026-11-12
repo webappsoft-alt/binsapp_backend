@@ -207,6 +207,10 @@ const userSchema = new mongoose.Schema(
       type: String,
       default: "",
     },
+    dba: {
+      type: String,
+      default: "",
+    },
     EIN: {
       type: String,
       default: "",

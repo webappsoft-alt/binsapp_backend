@@ -35,8 +35,6 @@ export async function userinfo(userId) {
       { path: "treeRemoval", select: "status" },
       {
         path: "company",
-        select:
-          "companyName legalBusinessName status expectedMonthlyVolume invoiceTerms pricingPlan",
       },
     ])
     .select("-password")
@@ -275,6 +273,12 @@ export async function updateUser(userId, updates = {}) {
       label: "Company",
       entityId: companyData?._id,
     });
+    if (companyData) {
+      user.compnay_status = companyData.status || "pending";
+      user.legal_business_name = companyData.legalBusinessName || companyData.companyName || user.legal_business_name || "";
+      user.EIN = companyData.EIN || user.EIN || "";
+      user.dba = companyData.dba || updates.company?.dba || user.dba || "";
+    }
     // Remove from updates
     delete updates.company;
   }

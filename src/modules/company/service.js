@@ -85,6 +85,12 @@ class CompanyService {
     if (payload.name != null && payload.companyName == null) {
       payload.companyName = payload.name;
     }
+    if (payload.companyName && !payload.legalBusinessName) {
+      payload.legalBusinessName = payload.companyName;
+    }
+    if (payload.legalBusinessName && !payload.companyName) {
+      payload.companyName = payload.legalBusinessName;
+    }
     delete payload.name;
     return payload;
   }

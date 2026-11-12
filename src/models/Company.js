@@ -79,6 +79,7 @@ const companySchema = new Schema(
     country: { type: String, default: "" },
     phone: { type: String, default: "" },
     legalBusinessName: { type: String, default: "", required: true },
+    dba: { type: String, default: "" },
     COI: { type: String },
     isCOIApproved: { type: Boolean, default: false },
     COI_notes: { type: String },

@@ -1,7 +1,10 @@
 import Joi from "joi";
 
 export const createCompanyValidation = Joi.object({
-  name: Joi.string().required(),
+  name: Joi.string().optional().allow("", null),
+  companyName: Joi.string().optional().allow("", null),
+  legalBusinessName: Joi.string().optional().allow("", null),
+  dba: Joi.string().allow("", null).optional(),
   email: Joi.string().email().required().lowercase().trim(),
   phone: Joi.string().required(),
   taxInfo: Joi.string().allow("", null).optional(),
@@ -34,6 +37,9 @@ export const createCompanyValidation = Joi.object({
 });
 export const updateCompanyValidation = Joi.object({
   name: Joi.string().optional().allow("", null),
+  companyName: Joi.string().optional().allow("", null),
+  legalBusinessName: Joi.string().optional().allow("", null),
+  dba: Joi.string().allow("", null).optional(),
   email: Joi.string().email().optional().allow("", null),
   phone: Joi.string().optional().allow("", null),
   taxInfo: Joi.string().allow("", null).optional(),
@@ -46,6 +52,23 @@ export const updateCompanyValidation = Joi.object({
   W9: Joi.string().allow("", null).optional(),
   onBoardingDocs: Joi.string().allow("", null).optional(),
   logo: Joi.string().allow("", null).optional(),
+  EIN: Joi.string().optional().allow("", null),
+  primaryContact: Joi.object({
+    name: Joi.string().optional().allow("", null),
+    email: Joi.string().email().optional().allow("", null),
+    phone: Joi.string().optional().allow("", null),
+    title: Joi.string().optional().allow("", null),
+  }).optional(),
+  accountsPayableEmail: Joi.string().email().allow("", null).optional(),
+  expectedMonthlyVolume: Joi.number().allow("", null).optional(),
+  PO: Joi.boolean().optional(),
+  taxExempt: Joi.string().allow("", null).optional(),
+  authorizedSigner: Joi.object({
+    name: Joi.string().optional().allow("", null),
+    email: Joi.string().email().optional().allow("", null),
+    phone: Joi.string().optional().allow("", null),
+    title: Joi.string().optional().allow("", null),
+  }).optional(),
   isTaxExempt: Joi.boolean().optional(),
 });
 

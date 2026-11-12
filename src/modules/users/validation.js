@@ -22,6 +22,7 @@ export const registerSchema = Joi.object({
   company: Joi.object({
     companyName: Joi.string().optional(),
     legalBusinessName: Joi.string().optional(),
+    dba: Joi.string().optional().allow("", null),
     email: Joi.string().email().optional(),
     address: Joi.string().optional().allow("", null),
     city: Joi.string().optional().allow("", null),
