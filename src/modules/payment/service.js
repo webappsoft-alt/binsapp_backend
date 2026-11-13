@@ -250,6 +250,7 @@ class PaymentService {
       filter = '',
       status = '',
       sort = '',
+      channel = '',
     } = options;
 
     try {
@@ -358,6 +359,24 @@ class PaymentService {
             $or: [
               { 'metadata.status': 'succeeded' },
               { 'metadata.status': { $exists: false } },
+            ],
+          });
+        }
+      }
+
+      // Payment channel filter (wallet vs stripe)
+      if (channel && channel !== 'all') {
+        const ch = String(channel).toLowerCase();
+        if (ch === 'stripe' || ch === 'card') {
+          filterConditions.push({
+            stripePaymentIntentId: { $exists: true, $ne: null, $nin: ['', 'null'] },
+          });
+        } else if (ch === 'wallet' || ch === 'bins_wallet') {
+          filterConditions.push({
+            $or: [
+              { stripePaymentIntentId: { $exists: false } },
+              { stripePaymentIntentId: null },
+              { stripePaymentIntentId: '' },
             ],
           });
         }

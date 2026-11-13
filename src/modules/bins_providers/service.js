@@ -609,19 +609,45 @@ class BinsProvidersService {
       status: "completed",
     })
       .populate("dumbster")
+      .populate("portaPotty")
+      .populate("jobSite", "siteName city address")
       .sort({ updatedAt: -1 })
-      .limit(10)
+      .limit(20)
       .lean();
 
-    const completedOrdersHistory = recentCompletedOrders.map((ord) => ({
-      orderId: `#${ord._id.toString().slice(-6)}`,
-      serviceType: ord.service_type || "Dumpster Rental",
-      size: ord.dumbster?.size ? `${ord.dumbster.size} Yard` : "Standard Dumpster",
-      completedDate: ord.updatedAt || ord.end_date || ord.createdAt,
-      city: ord.address ? ord.address.split(",").slice(-2)[0]?.trim() : "Local Jobsite",
-      numDays: ord.num_days || 3,
-      verified: true,
-    }));
+    const completedOrdersHistory = recentCompletedOrders.map((ord) => {
+      const orderNumber = ord.orderNumber ? `#${ord.orderNumber}` : `#${ord._id.toString().slice(-6).toUpperCase()}`;
+      const rawSvc = ord.service_type || "Dumpster";
+      const svcFormatted = rawSvc === "Dumbster" ? "Dumpster Rental" : rawSvc;
+      const equip = ord.dumbster?.size
+        ? `${ord.dumbster.size} Yard Dumpster`
+        : ord.portaPotty?.unit_type
+          ? `${ord.portaPotty.unit_type} Porta Potty`
+          : rawSvc === "Junk Removal"
+            ? "Junk Removal & Hauling"
+            : rawSvc === "Tree Removal"
+              ? "Tree Trimming & Removal"
+              : `${svcFormatted}`;
+      const jobsiteName = ord.jobSite?.siteName || "";
+      const cityLoc = ord.jobSite?.city || (ord.address ? ord.address.split(",").slice(-3, -1).join(", ").trim() || ord.address.split(",")[0] : "Local Jobsite");
+      const fullLocation = jobsiteName ? `${jobsiteName} · ${cityLoc}` : (ord.address || cityLoc);
+
+      return {
+        orderId: orderNumber,
+        orderNumber,
+        serviceType: svcFormatted,
+        service_type: svcFormatted,
+        equipment: equip,
+        size: equip,
+        location: fullLocation,
+        jobsite: fullLocation,
+        city: cityLoc,
+        completedDate: ord.updatedAt || ord.end_date || ord.createdAt,
+        status: "Completed",
+        numDays: ord.num_days || ord.numDays || 3,
+        verified: true,
+      };
+    });
 
     const finalCompletedOrdersCount = Math.max(
       completedOrdersCount,
@@ -632,7 +658,7 @@ class BinsProvidersService {
     const ratings = await Rating.find({ to_id: providerId })
       .populate({
         path: "user",
-        select: "name profilePicture comp_name",
+        select: "name profilePicture comp_name first_name last_name email",
       })
       .sort({ createdAt: -1 })
       .limit(50)
@@ -648,15 +674,24 @@ class BinsProvidersService {
       ratingSum += Number(r.rating) || 5;
 
       const reviewerName =
-        r.user?.name || r.user?.comp_name || "Verified Customer";
+        r.user?.name ||
+        r.user?.comp_name ||
+        [r.user?.first_name, r.user?.last_name].filter(Boolean).join(" ") ||
+        (r.user?.email ? r.user.email.split("@")[0] : "") ||
+        "Verified Customer";
 
       return {
         _id: r._id,
         reviewerName,
+        userName: reviewerName,
+        name: reviewerName,
         reviewerPicture: r.user?.profilePicture || "",
-        rating: Number(r.rating) || 5,
+        rating: score,
         review: r.review || "Great service and prompt on-time delivery!",
+        comment: r.review || "Great service and prompt on-time delivery!",
+        text: r.review || "Great service and prompt on-time delivery!",
         date: r.createdAt,
+        createdAt: r.createdAt,
         verifiedRental: true,
       };
     });

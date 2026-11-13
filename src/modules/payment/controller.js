@@ -153,6 +153,8 @@ export const getTransactionsController = async (req, res, next) => {
       filter,
       status,
       sort,
+      channel,
+      paymentMethod,
     } = req.query;
 
     const query = {
@@ -177,6 +179,7 @@ export const getTransactionsController = async (req, res, next) => {
       filter,
       status,
       sort,
+      channel: channel || paymentMethod,
     });
     res.status(200).json({
       success: true,

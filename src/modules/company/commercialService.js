@@ -130,11 +130,19 @@ export async function enrichBillingRecordsForDisplay(
         ? allocation.provider
         : null;
 
-    if (!meta.providerName && providerDoc) {
-      meta.providerId = String(providerDoc._id || allocation.provider);
-      meta.providerName = providerDoc.name || providerDoc.comp_name || "";
-      meta.providerEmail = providerDoc.email || "";
-      meta.providerPhone = providerDoc.phone || "";
+    if (providerDoc) {
+      if (!meta.providerId) meta.providerId = String(providerDoc._id || allocation.provider);
+      if (!meta.providerName) meta.providerName = providerDoc.name || providerDoc.comp_name || "";
+      if (!meta.providerEmail) meta.providerEmail = providerDoc.email || "";
+      if (!meta.providerPhone) meta.providerPhone = providerDoc.phone || "";
+    } else if (allocation?.provider && !meta.providerId) {
+      meta.providerId = String(allocation.provider);
+    }
+    if (!meta.providerId && row.order) {
+      const orderProv = row.order.to_id || (Array.isArray(row.order.userIds) ? row.order.userIds[0] : null);
+      if (orderProv) {
+        meta.providerId = String(orderProv._id || orderProv);
+      }
     }
     if (!meta.offerTitle && offer?.title) {
       meta.offerTitle = offer.title;
