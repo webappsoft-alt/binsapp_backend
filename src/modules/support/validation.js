@@ -4,4 +4,5 @@ export const createSupportSchema = Joi.object({
   name: Joi.string().required(),
   email: Joi.string().email().required(),
   msg: Joi.string().required(),
+  phone: Joi.string().allow("", null).optional(),
 });

@@ -13,6 +13,10 @@ const supportSchema = new mongoose.Schema({
     type: String,
     required: true,
   },
+  phone: {
+    type: String,
+    default: "",
+  },
   msg: {
     type: String,
     required: true,

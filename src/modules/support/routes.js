@@ -6,7 +6,7 @@ import {
   getSupport,
   getMySupportTickets,
 } from "./controller.js";
-import { authenticate, admin } from "../../middlewares/auth.js";
+import { optionalAuthenticate, authenticate, admin } from "../../middlewares/auth.js";
 import { validate } from "../../middlewares/validate.js";
 import { createSupportSchema } from "./validation.js";
 const router = express.Router();
@@ -57,60 +57,10 @@ const router = express.Router();
  *           format: date-time
  */
 
-router.use(authenticate);
-
-/**
- * @swagger
- * /api/support/:
- *   post:
- *     summary: Create Support Ticket
- *     description: Creates a new support ticket.
- *     tags: [Support]
- *     security:
- *       - BearerAuth: []
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required: [name, email, msg]
- *             properties:
- *               name:
- *                 type: string
- *                 example: John Doe
- *               email:
- *                 type: string
- *                 format: email
- *                 example: john@example.com
- *               msg:
- *                 type: string
- *                 example: I need help with my order.
- *     responses:
- *       200:
- *         description: Support ticket created successfully
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                   example: true
- *                 message:
- *                   type: string
- *                   example: Support created successfully
- *                 data:
- *                   $ref: '#/components/schemas/Support'
- *       400:
- *         $ref: '#/components/responses/BadRequestError'
- *       401:
- *         $ref: '#/components/responses/UnauthorizedError'
- */
-router.post("/", validate(createSupportSchema), createSupport);
+router.post("/", optionalAuthenticate, validate(createSupportSchema), createSupport);
 
 // Current user's own tickets ("My Tickets" in the provider / customer portal).
-router.get("/tickets", getMySupportTickets);
+router.get("/tickets", authenticate, getMySupportTickets);
 
 /**
  * @swagger
@@ -169,7 +119,7 @@ router.get("/tickets", getMySupportTickets);
  *       403:
  *         $ref: '#/components/responses/ForbiddenError'
  */
-router.get("/", admin, getSupport);
+router.get("/", authenticate, admin, getSupport);
 
 /**
  * @swagger
@@ -210,7 +160,7 @@ router.get("/", admin, getSupport);
  *       403:
  *         $ref: '#/components/responses/ForbiddenError'
  */
-router.put("/admin/:id", admin, attendTheSupport);
+router.put("/admin/:id", authenticate, admin, attendTheSupport);
 
 /**
  * @swagger
@@ -251,6 +201,6 @@ router.put("/admin/:id", admin, attendTheSupport);
  *       403:
  *         $ref: '#/components/responses/ForbiddenError'
  */
-router.delete("/admin/:id", admin, deleteSupport);
+router.delete("/admin/:id", authenticate, admin, deleteSupport);
 
 export default router;

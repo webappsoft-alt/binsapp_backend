@@ -13,11 +13,12 @@ import { io } from "../../socket/socket.js";
 class SupportService {
   async createSupport(userId, data) {
     try {
-      const { email, msg, name } = data;
+      const { email, msg, name, phone } = data;
 
       const support = new Support({
-        user: userId,
+        user: userId || null,
         email: email ? String(email).trim().toLowerCase() : "",
+        phone: phone ? String(phone).trim() : "",
         msg: String(msg || "").trim(),
         name: String(name || "").trim(),
         supportId: "SP-" + generateOTP(10),
@@ -34,7 +35,7 @@ class SupportService {
           type: "support",
         });
         sendNotification({
-          user: userId,
+          user: userId || "",
           to_id: adminUser._id.toString(),
           description: `A User have created a new Support ticket!`,
           type: "support",
