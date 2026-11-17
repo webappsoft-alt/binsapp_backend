@@ -85,6 +85,7 @@ import {
   penaltySchema,
   removePenaltySchema,
 } from "../growth/validation.js";
+import { searchAdminRecords } from "./adminSearch.js";
 
 const router = Router();
 
@@ -246,6 +247,34 @@ router.use([authenticate, admin]);
  *       403:
  *         $ref: '#/components/responses/ForbiddenError'
  */
+/**
+ * @swagger
+ * /api/admin/search:
+ *   get:
+ *     summary: Global Admin Search
+ *     description: Search orders, users, dumpsters, companies, leads, and service requests
+ *     tags: [Admin]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: q
+ *         schema:
+ *           type: string
+ *         description: Search query keyword
+ *     responses:
+ *       200:
+ *         description: Search results
+ */
+router.get("/search", async (req, res, next) => {
+  try {
+    const data = await searchAdminRecords(req.query.q);
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.get("/users", getAllUsers);
 
 /**
