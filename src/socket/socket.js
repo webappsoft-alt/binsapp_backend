@@ -19,6 +19,7 @@ import AdminManualReviewRequest from "../models/AdminManualReviewRequests.js";
 // import
 import mongoose from "mongoose";
 import { registerChatUploadHandlers } from "./chatUploads.js";
+import { registerChatDeleteHandlers } from "./chatDelete.js";
 import { registerReadHandlers, isUserOnline } from "./readReceipts.js";
 import { sendOrderEmailToUser } from "../utils/emailservice.js";
 import { isValidObjectId } from "../utils/_idvalidationhelper.js";
@@ -247,7 +248,9 @@ export const initSocket = (server) => {
   registerSidebarCountsIO(io);
 
   io.on("connection", (socket) => {
-    registerChatUploadHandlers(socket);
+    const chatUploadedUrls = new Set();
+    registerChatUploadHandlers(socket, chatUploadedUrls);
+    registerChatDeleteHandlers(socket, io, chatUploadedUrls);
     registerReadHandlers(socket, io);
     /**
      * REAL-TIME COMMUNICATION ENGINE

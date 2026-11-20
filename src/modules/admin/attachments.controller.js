@@ -159,7 +159,7 @@ const SOURCES = [
     key: "chat",
     service: "Chat",
     model: Message,
-    match: { "attachment.url": { $nin: [null, ""] } },
+    match: { "attachment.url": { $nin: [null, ""] }, isDeleted: { $ne: true } },
     select: "attachment senderId receiverId conversationId timestamp createdAt type",
     fields: [{ path: "attachment.url", label: "Chat attachment" }],
     owner: (d) => d.senderId,
@@ -234,6 +234,12 @@ async function buildIndex() {
       };
     })
     .sort((a, b) => new Date(b.uploadedAt || 0) - new Date(a.uploadedAt || 0));
+}
+
+/** A file was deleted: drop it from the cached Files list right away (no 60s wait). */
+export function forgetAttachment(url) {
+  if (!url || !cache.items) return;
+  cache.items = cache.items.filter((r) => r.url !== url);
 }
 
 async function getIndex(force = false) {

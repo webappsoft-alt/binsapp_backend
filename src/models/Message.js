@@ -82,6 +82,15 @@ const messageSchema = new Schema({
     type: Date,
     default: Date.now,
   },
+  // The sender removed this file; the file is gone from storage too.
+  isDeleted: {
+    type: Boolean,
+    default: false,
+  },
+  deletedAt: {
+    type: Date,
+    default: null,
+  },
   // Message status tracking
   status: {
     type: String,

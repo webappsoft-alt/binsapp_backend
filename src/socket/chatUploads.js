@@ -30,7 +30,7 @@ const extOf = (name, mimetype) => {
   return mime.extension(mimetype || "") || "bin";
 };
 
-export function registerChatUploadHandlers(socket) {
+export function registerChatUploadHandlers(socket, uploadedUrls = new Set()) {
   const uploads = new Map();
 
   const cleanup = (id) => {
@@ -87,6 +87,7 @@ export function registerChatUploadHandlers(socket) {
     const u = uploads.get(id);
     if (!u) return cb({ success: false, error: "Unknown upload" });
     if (u.received !== u.size) return cb({ success: false, error: "Upload incomplete" });
+    u.ending = true;
     u.stream.end(async () => {
       try {
         const bucket = admin.storage().bucket();
@@ -94,6 +95,11 @@ export function registerChatUploadHandlers(socket) {
         await bucket.upload(u.tmp, { destination, metadata: { contentType: u.mimetype } });
         await bucket.file(destination).makePublic();
         const url = `https://storage.googleapis.com/${bucket.name}/${destination}`;
+        if (u.cancelled) {
+          await bucket.file(destination).delete({ ignoreNotFound: true }).catch(() => {});
+          return cb({ success: false, error: "Upload cancelled" });
+        }
+        uploadedUrls.add(url);
         cb({ success: true, url, filename: u.name, mimetype: u.mimetype, size: u.size });
       } catch (e) {
         logger.error(`chat upload failed: ${e?.message}`);
@@ -104,6 +110,13 @@ export function registerChatUploadHandlers(socket) {
     });
   });
 
-  socket.on("upload:cancel", (data = {}) => cleanup(data.uploadId));
+  socket.on("upload:cancel", (data = {}) => {
+    const u = uploads.get(data.uploadId);
+    if (u?.ending) {
+      u.cancelled = true; // upload:end removes the stored copy and cleans up
+      return;
+    }
+    cleanup(data.uploadId);
+  });
   socket.on("disconnect", () => [...uploads.keys()].forEach(cleanup));
 }
