@@ -41,6 +41,7 @@ import {
 } from "./junkRemovalConfig.controller.js";
 import { Router } from "express";
 import { authenticate, admin } from "../../middlewares/auth.js";
+import { getSidebarCounts, getDashboardSummary } from "./sidebarCounts.js";
 import { validate } from "../../middlewares/validate.js";
 import {
   loginSchema,
@@ -2123,8 +2124,24 @@ import {
   getAdminProviderEstimates,
   getAdminProviderEstimateById,
   nudgeProviderForEstimate,
+  createAdminEstimate,
+  getAdminProvidersList,
+  submitAdminEstimate,
 } from "./providerEstimates.controller.js";
 import { getAdminLiveDispatchRadar } from "./dispatchRadar.controller.js";
+import {
+  createBroadcast,
+  listBroadcasts,
+  getBroadcast,
+  previewBroadcastAudience,
+  getNotificationSettings,
+  updateNotificationSettings,
+} from "./broadcasts.controller.js";
+import { lookupCommercialLeads, getCommercialLeadDetail } from "./commercialLeadDetail.controller.js";
+import { getChatDirectory } from "./chatDirectory.controller.js";
+import { getOwnerLeads } from "./ownerLeads.controller.js";
+import { listAttachments, getAttachment } from "./attachments.controller.js";
+import { getServiceRequestDetail } from "./serviceRequestDetail.controller.js";
 import { getAdminReports } from "./reports.controller.js";
 import { getAdminCalendarOrders } from "../order/controller.js";
 
@@ -2141,9 +2158,35 @@ router.post("/sms-logs/:id/resend", authenticate, admin, resendAdminSms);
 router.get("/sms-logs/:id/sync", authenticate, admin, syncAdminSmsStatus);
 
 // CRM & Oversight: Provider Direct Leads & Estimates
+router.get("/sidebar-counts", authenticate, admin, getSidebarCounts);
+router.get("/dashboard-summary", authenticate, admin, getDashboardSummary);
+router.get("/provider-estimates/providers-list", authenticate, admin, getAdminProvidersList);
 router.get("/provider-estimates", authenticate, admin, getAdminProviderEstimates);
 router.get("/provider-estimates/:id", authenticate, admin, getAdminProviderEstimateById);
 router.post("/provider-estimates/:id/nudge", authenticate, admin, nudgeProviderForEstimate);
+
+// Notifications: multi-channel broadcasts (push / email / sms), history and channel settings
+router.get("/broadcasts/preview-count", authenticate, admin, previewBroadcastAudience);
+router.get("/broadcasts", authenticate, admin, listBroadcasts);
+router.get("/broadcasts/:id", authenticate, admin, getBroadcast);
+router.post("/broadcasts", authenticate, admin, createBroadcast);
+router.get("/notification-settings", authenticate, admin, getNotificationSettings);
+router.put("/notification-settings", authenticate, admin, updateNotificationSettings);
+
+// Admin chat: one paginated list of conversations + everyone the admin can message
+router.get("/chat-directory", authenticate, admin, getChatDirectory);
+router.get("/owners/:id/leads", authenticate, admin, getOwnerLeads);
+
+// Attachments library: every uploaded file, who uploaded it and for which service
+router.get("/attachments/item", authenticate, admin, getAttachment);
+router.get("/attachments", authenticate, admin, listAttachments);
+
+// Service approvals: one application / bin listing by id (detail pages)
+router.get("/service-requests/:type/:id", authenticate, admin, getServiceRequestDetail);
+
+// Commercial lead record pages
+router.get("/commercial-leads/lookup", authenticate, admin, lookupCommercialLeads);
+router.get("/commercial-leads/:type/:id", authenticate, admin, getCommercialLeadDetail);
 
 // Operations: Live Dispatch Radar
 router.get("/live-dispatch-radar", authenticate, admin, getAdminLiveDispatchRadar);

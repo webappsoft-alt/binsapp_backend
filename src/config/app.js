@@ -31,6 +31,7 @@ import {
 import { swaggerDocs } from "./swagger.js";
 import { stripeWebhookController } from "../modules/payment/webhookController.js";
 import { registerAccountDeletionRoutes } from "./accountDeletionRoutes.js";
+import { sidebarCountsWriteHook } from "../modules/admin/sidebarCounts.js";
 const app = express();
 // // const server = createServer(app);
 app.use(express.static("public"));
@@ -463,6 +464,8 @@ app.use((req, res, next) => {
   }
   next();
 });
+// Admin sidebar badges: refresh connected admins after any successful write.
+app.use("/api", sidebarCountsWriteHook);
 app.use("/api", routes);
 swaggerDocs(app);
 

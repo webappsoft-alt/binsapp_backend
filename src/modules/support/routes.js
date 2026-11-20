@@ -4,6 +4,7 @@ import {
   createSupport,
   deleteSupport,
   getSupport,
+  getSupportById,
   getMySupportTickets,
 } from "./controller.js";
 import { optionalAuthenticate, authenticate, admin } from "../../middlewares/auth.js";
@@ -120,6 +121,9 @@ router.get("/tickets", authenticate, getMySupportTickets);
  *         $ref: '#/components/responses/ForbiddenError'
  */
 router.get("/", authenticate, admin, getSupport);
+
+router.get("/admin/:id", authenticate, admin, getSupportById);
+router.get("/:id", authenticate, admin, getSupportById);
 
 /**
  * @swagger

@@ -14,6 +14,28 @@ import { recomputeOperatorGrowth } from "../../utils/growthEngine.js";
 import logger from "../../config/logger.js";
 
 class RatingService {
+  async getRatingById(ratingId) {
+    try {
+      const rating = await Rating.findById(ratingId)
+        .populate("user", "name email phone profilePicture role type address createdAt")
+        .populate("to_id", "name comp_name email phone profilePicture role type address comp_address")
+        .populate({
+          path: "order",
+          populate: [
+            { path: "to_id", select: "name comp_name email phone" },
+            { path: "user_id", select: "name email phone" },
+          ],
+        })
+        .lean();
+      if (!rating) {
+        throw new NotFoundError("Rating not found.");
+      }
+      return rating;
+    } catch (error) {
+      throw error;
+    }
+  }
+
   async calculateAverage(initialValue, numberToAdd) {
     if (initialValue == 0) return Number(numberToAdd);
 

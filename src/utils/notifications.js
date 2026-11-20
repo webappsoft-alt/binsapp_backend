@@ -23,6 +23,8 @@ export const sendNotification = async ({
   // Android notification channel + sound file (res/raw name, no extension).
   channelId = "bins_order_alerts",
   sound = "order_alert",
+  // Optional picture shown in the expanded notification (admin broadcasts send a template snapshot).
+  imageUrl = "",
 }) => {
   // return true;
   try {
@@ -88,8 +90,9 @@ export const sendNotification = async ({
         notification: {
           title: title,
           body: description,
+          ...(imageUrl ? { imageUrl } : {}),
         },
-        data: dataPayload,
+        data: imageUrl ? { ...dataPayload, image: String(imageUrl) } : dataPayload,
         android: {
           priority: "high",
           notification: {
@@ -100,11 +103,13 @@ export const sendNotification = async ({
           },
         },
         apns: {
+          ...(imageUrl ? { fcmOptions: { imageUrl } } : {}),
           headers: {
             "apns-priority": "10",
           },
           payload: {
             aps: {
+              ...(imageUrl ? { "mutable-content": 1 } : {}),
               sound: apnsSound,
               alert: {
                 title: title,

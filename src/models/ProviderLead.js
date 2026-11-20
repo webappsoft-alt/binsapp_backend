@@ -106,6 +106,17 @@ const providerLeadSchema = new mongoose.Schema(
       type: String,
       default: "provider_profile",
     },
+    /**
+     * Who made this lead: "customer" (asked from an owner's profile page),
+     * "owner" (the owner made it and sent it to a customer) or "admin".
+     * Older leads have no value — use source to tell them apart.
+     */
+    createdBy: {
+      type: String,
+      enum: ["customer", "owner", "admin", null],
+      default: null,
+      index: true,
+    },
   },
   {
     timestamps: true,

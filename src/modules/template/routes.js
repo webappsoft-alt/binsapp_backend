@@ -5,6 +5,11 @@ import {
   getTemplateById,
   updateTemplate,
   deleteTemplate,
+  syncSystemTemplates,
+  resetTemplate,
+  duplicateTemplate,
+  renderTemplate,
+  getDefaultInvoice,
 } from "./controller.js";
 import { validate } from "../../middlewares/validate.js";
 import { createTemplateSchema, updateTemplateSchema } from "./validation.js";
@@ -93,6 +98,12 @@ router.use(authenticate, admin);
  *       403:
  *         $ref: '#/components/responses/ForbiddenError'
  */
+router.post("/sync-system", syncSystemTemplates);
+router.post("/render", renderTemplate);
+router.get("/invoice/default", getDefaultInvoice);
+router.post("/:id/reset", resetTemplate);
+router.post("/:id/duplicate", duplicateTemplate);
+router.post("/:id/render", renderTemplate);
 router.post("/", validate(createTemplateSchema), createTemplate);
 
 /**

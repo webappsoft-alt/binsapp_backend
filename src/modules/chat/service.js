@@ -87,11 +87,17 @@ export async function getAllConversations(userId, options = {}) {
         .select("_id")
         .lean();
       const otherUserIdArray = users.map((user) => user._id);
+      // Also match conversations where any message text contains the search term.
+      const messageConvIds = await Message.distinct("conversationId", {
+        $or: [{ senderId: userIdObj }, { receiverId: userIdObj }],
+        content: { $regex: safeSearch, $options: "i" },
+      });
 
-      queryFilters.participants = {
-        $all: [userIdObj],
-        $in: otherUserIdArray,
-      };
+      queryFilters.participants = userIdObj;
+      queryFilters.$or = [
+        { participants: { $in: otherUserIdArray } },
+        { _id: { $in: messageConvIds } },
+      ];
     } else {
       queryFilters.participants = { $in: [userIdObj] };
     }
@@ -163,13 +169,19 @@ export async function getAllConversations(userId, options = {}) {
 
     const totalPages = Math.ceil(total / limit);
 
+    // Badge total = every unread message across ALL of this user's conversations — not just the
+    // current page / type / search (that made header and sidebar badges too low).
+    const myConvIds = await Conversation.distinct("_id", { participants: userIdObj, status });
+    const totalUnreadCount = await Message.countDocuments({
+      conversationId: { $in: myConvIds },
+      receiverId: userIdObj,
+      "deliveryStatus.read": false,
+    });
+
     return {
       success: true,
       conversations: processedConversations,
-      totalUnreadCount: processedConversations.reduce(
-        (acc, conv) => acc + conv.unreadCount,
-        0,
-      ),
+      totalUnreadCount,
       pagination: {
         total,
         page,
@@ -279,18 +291,12 @@ export async function getConversationMessages(
       }
     });
 
-    await Message.updateMany(
-      {
-        conversationId: conversation_Id._id,
-        receiverId: userIdObj,
-        "deliveryStatus.read": false,
-      },
-      {
-        "deliveryStatus.delivered": true,
-        "deliveryStatus.read": true,
-        "deliveryStatus.readAt": new Date(),
-      },
-    );
+    // Opening the thread reads it — and the sender is told live (✓✓ turns green, "Read").
+    {
+      const { io } = await import("../../socket/socket.js");
+      const { markConversationRead } = await import("../../socket/readReceipts.js");
+      await markConversationRead(io, conversation_Id._id, userIdObj);
+    }
     // Apply timestamp filters
     if (before) {
       messages = messages.filter((msg) => msg.timestamp < new Date(before));

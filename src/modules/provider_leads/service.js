@@ -6,6 +6,7 @@ import Order from "../../models/Order.js";
 import User from "../../models/User.js";
 import Dustbin from "../../models/Dustbin.js";
 import JunkRemoval from "../../models/JunkRemoval.js";
+import { attachRepeats } from "../../utils/leadOrigin.js";
 import TreeRemoval from "../../models/TreeRemoval.js";
 import Notification from "../../models/Notification.js";
 import OrderTimeline from "../../models/OrderTimeline.js";
@@ -81,6 +82,8 @@ class ProviderLeadsService {
         (junkProfile && (junkProfile.COI || junkProfile.isCOIAApproved))
       );
       const isApprovedJunk = Boolean(
+        provider.role === "renter" ||
+        provider.type === "renter" ||
         (junkProfile && junkProfile.status !== "rejected" && hasInsurance) ||
         (provider.junkRemoval && hasInsurance) ||
         (provider.access_types === "junkRemoval" && hasInsurance)
@@ -152,6 +155,7 @@ class ProviderLeadsService {
       drivewayProtection: drivewayProtection !== false,
       status: "pending",
       source: "provider_profile",
+      createdBy: "customer",
     });
 
     await lead.save();
@@ -306,7 +310,7 @@ class ProviderLeadsService {
     });
 
     return {
-      leads,
+      leads: await attachRepeats(leads),
       pagination: {
         total,
         page: Number(page),
@@ -405,7 +409,7 @@ class ProviderLeadsService {
       converted: (by.converted || 0) + (by.estimate_accepted || 0),
       declined: (by.declined || 0) + (by.cancelled || 0),
     };
-    return { leads, total, page: pageNum, limit: limitNum, totalPages: Math.ceil(total / limitNum) || 1, counts };
+    return { leads: await attachRepeats(leads), total, page: pageNum, limit: limitNum, totalPages: Math.ceil(total / limitNum) || 1, counts };
   }
 
   /**
@@ -1054,7 +1058,8 @@ class ProviderLeadsService {
       placementNotes: String(placementNotes || "").trim(),
       drivewayProtection: Boolean(drivewayProtection),
       status,
-      source: source || "from_provider",
+      source: source && source !== "provider_profile" ? source : "from_provider",
+      createdBy: "owner",
       estimate: hasEstimate
         ? {
             estimatedPrice: Number(initialEstimate.estimatedPrice),

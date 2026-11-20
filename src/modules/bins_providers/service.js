@@ -284,7 +284,9 @@ class BinsProvidersService {
           (junkProfile && (junkProfile.COI || junkProfile.isCOIAApproved))
       );
       const hasJunkRemoval = Boolean(
-        (junkProfile && junkProfile.status !== "rejected" && hasJunkInsurance) ||
+        u.role === "renter" ||
+          u.type === "renter" ||
+          (junkProfile && junkProfile.status !== "rejected" && hasJunkInsurance) ||
           (u.junkRemoval && hasJunkInsurance) ||
           (u.access_types === "junkRemoval" && hasJunkInsurance)
       );
@@ -728,7 +730,9 @@ class BinsProvidersService {
         (junkProfile && (junkProfile.COI || junkProfile.isCOIAApproved))
     );
     const hasJunkRemoval = Boolean(
-      (junkProfile && junkProfile.status !== "rejected" && hasJunkInsurance) ||
+      user.role === "renter" ||
+        user.type === "renter" ||
+        (junkProfile && junkProfile.status !== "rejected" && hasJunkInsurance) ||
         (user.junkRemoval && hasJunkInsurance) ||
         (user.access_types === "junkRemoval" && hasJunkInsurance)
     );

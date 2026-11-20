@@ -91,6 +91,19 @@ export const getALLRatings = async (req, res, next) => {
   }
 };
 
+export const getRatingById = async (req, res, next) => {
+  try {
+    const rating = await ratingService.getRatingById(req.params.id);
+    res.status(200).json({
+      success: true,
+      message: "Rating fetched successfully",
+      data: rating,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const deleteRating = async (req, res, next) => {
   try {
     const ratingId = req.params.id;

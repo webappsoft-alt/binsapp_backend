@@ -118,7 +118,7 @@ router.get('/unread-count', getUnreadNotificationCount);
  * /api/notification/seen:
  *   put:
  *     summary: Mark specific notifications as seen
- *     description: Body `{ ids: string[] }` (max 200). Returns the new unread total and pushes it over the socket (`notification:count`).
+ *     description: "Mark specific notifications as seen by array of IDs. Returns new unread count."
  *     tags: [Notification]
  *     security:
  *       - BearerAuth: []

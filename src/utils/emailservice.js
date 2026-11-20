@@ -1,6 +1,7 @@
 import logger from "../config/logger.js";
 import nodemailer from "nodemailer";
 import config from "../config/env.js";
+import { applyTemplateOverride } from "./templateOverrides.js";
 
 const transporter = nodemailer.createTransport({
   host: "mail.binsapp.ai",
@@ -41,14 +42,8 @@ export const sendEmail = async (email, code) => {
   });
 };
 
-export const sendAdminEmailToUser = async (
-  email,
-  subject,
-  html,
-  description,
-) => {
-  // Create a Nodemailer transporter object
-  const htmlTemplate = `
+export const partnerUpdateEmailHtml = (subject, description) =>
+  `
   
 <!DOCTYPE html>
 <html>
@@ -158,6 +153,19 @@ export const sendAdminEmailToUser = async (
 </html>
 
 `;
+
+export const sendAdminEmailToUser = async (
+  email,
+  subject,
+  html,
+  description,
+) => {
+  // Create a Nodemailer transporter object
+  const htmlTemplate = applyTemplateOverride(
+    "partner_update",
+    { subject, description },
+    partnerUpdateEmailHtml(subject, description),
+  );
   const attachments = [
     {
       filename: "waste-advantage.png",
@@ -195,19 +203,8 @@ export const sendAdminEmailToUser = async (
   });
 };
 
-export const sendOrderEmailToUser = async (
-  email,
-  orderId,
-  address,
-  price,
-  name,
-  phone,
-  rentee,
-) => {
-  const link = rentee
-    ? `https://api.binsapp.ai/owner-orders?orderId=${orderId}`
-    : `https://api.binsapp.ai/customer-orders?orderId=${orderId}`;
-  const htmlTemplate = `<!DOCTYPE html>
+export const orderCompletedEmailHtml = ({ orderId, address, price, name, phone, rentee, link }) =>
+  `<!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
@@ -312,7 +309,7 @@ export const sendOrderEmailToUser = async (
                     <div class="section-label">Order Details</div>
                     <div class="detail-item"><strong>Order ID:</strong> <span>#${orderId}</span></div>
                     <div class="detail-item"><strong>Address:</strong> <span>${address}</span></div>
-                    <div class="detail-item"><strong>Total Price:</strong> <span class="price-tag">$${price}</span></div>
+                    <div class="detail-item"><strong>Total Price:</strong> <span class="price-tag">${price}</span></div>
                     
                     <div class="section-label" style="margin-top: 15px;">
                         ${rentee ? "Rentee Detail" : "Renter Detail"}
@@ -356,6 +353,24 @@ export const sendOrderEmailToUser = async (
     </div>
 </body>
 </html>`;
+
+export const sendOrderEmailToUser = async (
+  email,
+  orderId,
+  address,
+  price,
+  name,
+  phone,
+  rentee,
+) => {
+  const link = rentee
+    ? `https://api.binsapp.ai/owner-orders?orderId=${orderId}`
+    : `https://api.binsapp.ai/customer-orders?orderId=${orderId}`;
+  const htmlTemplate = applyTemplateOverride(
+    "order_completed",
+    { orderId, address, price, name, phone, link, partyLabel: rentee ? "Rentee Detail" : "Renter Detail" },
+    orderCompletedEmailHtml({ orderId, address, price, name, phone, rentee, link }),
+  );
 
   // Email data
   const mailOptions = {

@@ -54,15 +54,41 @@ class SupportService {
 
   async getSupport(query, page, limit) {
     try {
-      const support = await Support.find(query)
-        .sort({ _id: -1 })
-        .populate("user")
-        .skip((page - 1) * limit)
-        .limit(limit)
-        .lean();
-      const totalCount = await Support.countDocuments(query);
+      const [support, totalCount, openCount, attendedCount] = await Promise.all([
+        Support.find(query)
+          .sort({ _id: -1 })
+          .populate("user")
+          .skip((page - 1) * limit)
+          .limit(limit)
+          .lean(),
+        Support.countDocuments(query),
+        Support.countDocuments({ attended: false }),
+        Support.countDocuments({ attended: true }),
+      ]);
       const totalPages = Math.ceil(totalCount / limit);
-      return { support, totalPages, totalCount };
+      return {
+        support,
+        totalPages,
+        totalCount,
+        counts: {
+          all: openCount + attendedCount,
+          open: openCount,
+          attended: attendedCount,
+        },
+      };
+    } catch (error) {
+      logger.error(error);
+      throw error;
+    }
+  }
+
+  async getSupportById(id) {
+    try {
+      const support = await Support.findById(id).populate("user").lean();
+      if (!support) {
+        throw new NotFoundError("Support ticket not found");
+      }
+      return support;
     } catch (error) {
       logger.error(error);
       throw error;

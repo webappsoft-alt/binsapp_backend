@@ -5,6 +5,7 @@ import {
   getAdminRatings,
   getOrderRating,
   getALLRatings,
+  getRatingById,
   deleteRating,
 } from "./controller.js";
 import { authenticate, admin } from "../../middlewares/auth.js";
@@ -61,6 +62,7 @@ const router = express.Router();
  *         description: Internal server error
  */
 router.get("/", getALLRatings);
+router.get("/detail/:id", getRatingById);
 
 /**
  * @swagger

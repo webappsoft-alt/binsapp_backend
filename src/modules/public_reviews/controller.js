@@ -35,6 +35,18 @@ export const getAllPublicReviewsbyAdmin = async (req, res, next) => {
   }
 };
 
+export const getPublicReviewById = async (req, res, next) => {
+  try {
+    const publicReview = await service.getPublicReviewById(req.params.id);
+    if (!publicReview) {
+      return res.status(404).json({ success: false, message: "Review not found" });
+    }
+    return res.status(200).json({ success: true, data: publicReview });
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const deletePublicReview = async (req, res, next) => {
   try {
     const publicReview = await service.deletePublicReview(req.params.id);

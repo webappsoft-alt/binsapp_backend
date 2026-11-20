@@ -98,6 +98,16 @@ const ALLOWED_DOC_EXTENSIONS = new Set([
   "docx",
   "rtf",
   "odt",
+  "xls",
+  "xlsx",
+  "csv",
+  "txt",
+  "ppt",
+  "pptx",
+  "zip",
+  "mp4",
+  "mov",
+  "webm",
 ]);
 
 const getUploadExtension = (file) => {
@@ -157,7 +167,7 @@ const upload = multer({
       cb(null, true);
     } else {
       cb(
-        new Error("Invalid file type. Only images and videos are allowed."),
+        new Error("Invalid file type. Allowed: images, videos, PDF, Word, Excel, CSV, text, PowerPoint and zip files."),
         false,
       );
     }

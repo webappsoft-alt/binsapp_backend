@@ -18,6 +18,8 @@ import OrderTimeline from "../models/OrderTimeline.js";
 import AdminManualReviewRequest from "../models/AdminManualReviewRequests.js";
 // import
 import mongoose from "mongoose";
+import { registerChatUploadHandlers } from "./chatUploads.js";
+import { registerReadHandlers, isUserOnline } from "./readReceipts.js";
 import { sendOrderEmailToUser } from "../utils/emailservice.js";
 import { isValidObjectId } from "../utils/_idvalidationhelper.js";
 import { AssignOrder } from "../models/AssignOrder.js";
@@ -73,6 +75,11 @@ import { processJunkAnalysisInBackground } from "../utils/JunkRemovalVisionProce
 // import ServicePayment from "../modules/services_payment/service.js";
 import { initSalesAgentSocket } from "../modules/sales_agent/socket/salesAgentSocket.js";
 import { initBuilderOfferSocket } from "../modules/builderOffer/socket.js";
+import {
+  registerSidebarCountsIO,
+  scheduleSidebarCountsBroadcast,
+  isCountChangingSocketEvent,
+} from "../modules/admin/sidebarCounts.js";
 
 // Map to track connected users (userId -> socketId)
 export const connectedUsers = new Map();
@@ -237,7 +244,11 @@ export const initSocket = (server) => {
     }
   });
 
+  registerSidebarCountsIO(io);
+
   io.on("connection", (socket) => {
+    registerChatUploadHandlers(socket);
+    registerReadHandlers(socket, io);
     /**
      * REAL-TIME COMMUNICATION ENGINE
      * This module handles all socket-based events including:
@@ -252,6 +263,11 @@ export const initSocket = (server) => {
 
     connectedUsers.set(socket.user._id.toString(), socket.id);
     socket.join(`user_${socket.user._id}`);
+
+    // Admin sidebar badges: state-changing socket events refresh the counts (debounced).
+    socket.onAny((event) => {
+      if (isCountChangingSocketEvent(event)) scheduleSidebarCountsBroadcast();
+    });
 
     socket.on("reassignOrder", async (data, callback) => {
       try {
@@ -2268,7 +2284,7 @@ export const initSocket = (server) => {
           // junk insurance, but final acceptance is blocked until those are set.
           const accepter = await User.findById(senderId)
             .select(
-              "accountId accountId_verified isInsured insuranceFile junkRemoval name",
+              "accountId accountId_verified isInsured insuranceFile junkRemoval name role type",
             )
             .populate({
               path: "junkRemoval",
@@ -2454,8 +2470,13 @@ export const initSocket = (server) => {
               ? await JunkRemoval.findById(junkRemovalId).lean()
               : null;
 
+            // Every dumpster owner is automatically qualified for junk removal
+            // and site cleanup, so they never hit the insurance gate below.
+            const isDumpsterOwner =
+              accepter?.role === "renter" || accepter?.type === "renter";
             const insured = Boolean(
-              accepter?.isInsured ||
+              isDumpsterOwner ||
+                accepter?.isInsured ||
                 accepter?.insuranceFile ||
                 findJunkRemoval?.COI,
             );
@@ -2481,7 +2502,7 @@ export const initSocket = (server) => {
                   message: "Junk removal profile not found.",
                 });
               }
-              if (findJunkRemoval.status === "rejected") {
+              if (findJunkRemoval.status === "rejected" && !isDumpsterOwner) {
                 return callback({
                   success: false,
                   title: "Request Update",
@@ -5561,6 +5582,14 @@ export const initSocket = (server) => {
         conversation.lastActivity = new Date();
         await conversation.save();
 
+        // Receiver is online right now → the message is delivered (✓✓) as soon as it is saved.
+        if (message.receiverId && isUserOnline(io, message.receiverId)) {
+          await Message.updateOne(
+            { _id: message._id },
+            { $set: { "deliveryStatus.delivered": true, "deliveryStatus.deliveredAt": new Date() } },
+          );
+          message.set("deliveryStatus.delivered", true);
+        }
         const populatedMessage = await message.populate("senderId");
 
         // 6. Notify & Emit to Participants
@@ -5745,6 +5774,13 @@ export const initSocket = (server) => {
         await conversation.save();
 
         // Populate sender details and original message
+        if (message.receiverId && isUserOnline(io, message.receiverId)) {
+          await Message.updateOne(
+            { _id: message._id },
+            { $set: { "deliveryStatus.delivered": true, "deliveryStatus.deliveredAt": new Date() } },
+          );
+          message.set("deliveryStatus.delivered", true);
+        }
         const populatedMessage = await message.populate([
           {
             path: "senderId",
@@ -5927,7 +5963,7 @@ export const initSocket = (server) => {
         // Notify sender
         const senderSocketId = connectedUsers.get(message.senderId.toString());
         if (senderSocketId) {
-          io.to(senderSocketId).emit("message:status", {
+          io.to(`user_${message.senderId}`).emit("message:status", {
             messageId: messageId,
             status: "delivered",
             timestamp: new Date(),
@@ -5980,7 +6016,7 @@ export const initSocket = (server) => {
         // Notify sender
         const senderSocketId = connectedUsers.get(message.senderId.toString());
         if (senderSocketId) {
-          io.to(senderSocketId).emit("message:status", {
+          io.to(`user_${message.senderId}`).emit("message:status", {
             messageId: messageId,
             status: "read",
             timestamp: new Date(),

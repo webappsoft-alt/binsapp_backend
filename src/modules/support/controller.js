@@ -17,14 +17,22 @@ export const createSupport = async (req, res, next) => {
 
 export const getSupport = async (req, res, next) => {
   try {
-    const { page = 1, limit = 10 } = req.query;
+    const { page = 1, limit = 10, status } = req.query;
     let query = {};
+    if (status === "attended") {
+      query.attended = true;
+    } else if (status === "open" || status === "not_attended") {
+      query.attended = false;
+    }
+
     if (req.query.search) {
       const searchQuery = req.query.search;
       query.$or = [
         { name: { $regex: searchQuery, $options: "i" } }, // Case-insensitive search
         { email: { $regex: searchQuery, $options: "i" } }, // Case-insensitive search
         { supportId: { $regex: searchQuery, $options: "i" } }, // Case-insensitive search
+        { msg: { $regex: searchQuery, $options: "i" } },
+        { phone: { $regex: searchQuery, $options: "i" } },
       ];
     }
 
@@ -32,6 +40,19 @@ export const getSupport = async (req, res, next) => {
     res.status(200).json({
       success: true,
       message: "Support fetched successfully",
+      data: support,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getSupportById = async (req, res, next) => {
+  try {
+    const support = await supportService.getSupportById(req.params.id);
+    res.status(200).json({
+      success: true,
+      message: "Support ticket fetched successfully",
       data: support,
     });
   } catch (error) {

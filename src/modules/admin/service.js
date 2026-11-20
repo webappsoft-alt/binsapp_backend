@@ -350,17 +350,18 @@ class adminService {
       // console.log("method sendNotifications in adminService called", data);
       const { title, description } = data;
       let supportTicketId = "";
+      let targetSupport = null;
       if (supportId) {
-        const support = await Support.findOne({ _id: supportId });
-        if (!support) throw new NotFoundError("Support not found");
+        targetSupport = await Support.findOne({ _id: supportId });
+        if (!targetSupport) throw new NotFoundError("Support not found");
 
-        support.history = [
+        targetSupport.history = [
           { title, description, createdAt: Date.now() },
-          ...support.history,
+          ...targetSupport.history,
         ];
 
-        supportTicketId = "Ticket#" + support.supportId;
-        await support.save();
+        supportTicketId = "Ticket#" + targetSupport.supportId;
+        await targetSupport.save();
       }
       const userslist = await User.find(query).select("fcmtoken email").lean();
       const newusers = userslist.map((item) => ({
@@ -368,6 +369,16 @@ class adminService {
         fcmtoken: item.fcmtoken,
         email: item.email,
       }));
+      if (
+        targetSupport?.email &&
+        !newusers.some((u) => u.email?.toLowerCase() === targetSupport.email.toLowerCase())
+      ) {
+        newusers.push({
+          _id: targetSupport.user ? targetSupport.user.toString() : "guest",
+          fcmtoken: "",
+          email: targetSupport.email,
+        });
+      }
       const jobdata = {
         userslist: newusers,
         title: title + " " + supportTicketId,
@@ -380,36 +391,114 @@ class adminService {
       throw error;
     }
   }
-  async getDashBoardUsersStats(type) {
+  async getDashBoardUsersStats(type, startDate, endDate) {
     try {
-      let query = {};
-      if (type !== "all") {
-        query.$or = [{ role: type }, { type: type }];
+      const baseConditions = [];
+      if (type && type !== "all") {
+        baseConditions.push({ $or: [{ role: type }, { type: type }] });
       } else {
-        query.$or = [
-          { role: { $nin: ["temp", "admin"] } },
-          { type: { $nin: ["temp", "admin"] } },
-        ];
+        baseConditions.push({
+          $or: [
+            { role: { $nin: ["temp", "admin"] } },
+            { type: { $nin: ["temp", "admin"] } },
+          ],
+        });
       }
 
-      const all = await User.countDocuments(query);
-      const active = await User.countDocuments({
-        ...query,
-        status: { $nin: ["deactivated", "deleted"] },
-      });
-      const inactive = await User.countDocuments({
-        ...query,
-        status: { $in: ["deactivated"] },
-      });
-      const deleted = await User.countDocuments({
-        ...query,
-        status: { $in: ["deleted"] },
-      });
+      if (startDate && endDate) {
+        baseConditions.push({
+          createdAt: {
+            $gte: new Date(startDate),
+            $lte: new Date(endDate),
+          },
+        });
+      }
+
+      const buildQuery = (extraConditions = []) => {
+        const combined = [...baseConditions, ...extraConditions];
+        return combined.length > 1 ? { $and: combined } : combined[0] || {};
+      };
+
+      const [
+        all,
+        active,
+        inactive,
+        deleted,
+        insured,
+        not_insured,
+        stripe,
+        pendingDustbins,
+        pendingPortas,
+      ] = await Promise.all([
+        User.countDocuments(buildQuery()),
+        User.countDocuments(
+          buildQuery([{ status: { $nin: ["deactivated", "deleted"] } }])
+        ),
+        User.countDocuments(buildQuery([{ status: { $in: ["deactivated"] } }])),
+        User.countDocuments(buildQuery([{ status: { $in: ["deleted"] } }])),
+        User.countDocuments(
+          buildQuery([
+            { status: { $ne: "deleted" } },
+            {
+              $or: [
+                { isInsured: true },
+                { insuranceFile: { $exists: true, $nin: [null, ""] } },
+              ],
+            },
+          ])
+        ),
+        User.countDocuments(
+          buildQuery([
+            { status: { $ne: "deleted" } },
+            { isInsured: { $ne: true } },
+            {
+              $or: [
+                { insuranceFile: { $exists: false } },
+                { insuranceFile: null },
+                { insuranceFile: "" },
+              ],
+            },
+          ])
+        ),
+        User.countDocuments(
+          buildQuery([
+            { status: { $ne: "deleted" } },
+            { accountId: { $exists: true, $nin: [null, ""] } },
+            { accountId_verified: true },
+          ])
+        ),
+        type === "renter" || type === "all"
+          ? Dustbin.countDocuments({
+              verify: false,
+              rejected: false,
+              status: "active",
+              $or: [{ portaPotty: null }, { portaPotty: { $exists: false } }],
+            })
+          : Promise.resolve(0),
+        type === "renter" || type === "all"
+          ? Dustbin.countDocuments({
+              verify: false,
+              rejected: false,
+              status: "active",
+              portaPotty: { $ne: null },
+            })
+          : Promise.resolve(0),
+      ]);
+
+      const totalPendingEquipment = (Number(pendingDustbins) || 0) + (Number(pendingPortas) || 0);
+
       return {
         all,
         active,
         inactive,
         deleted,
+        insured,
+        not_insured,
+        stripe,
+        pendingDustbins,
+        pendingPortas,
+        pendingBins: totalPendingEquipment,
+        pendingEquipment: totalPendingEquipment,
       };
     } catch (error) {
       logger.error(

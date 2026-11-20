@@ -1,3 +1,5 @@
+import { applyTemplateOverride } from "./templateOverrides.js";
+
 // export function buttonTemplate(
 //   orderLink,
 //   title = " New Order Offer ",
@@ -126,7 +128,7 @@
 // `;
 // }
 
-export function orderChangeOfferTemplate(orderLink) {
+function orderChangeOfferTemplateDefault(orderLink) {
   return `
 <!DOCTYPE html>
 <html>
@@ -256,7 +258,7 @@ export function orderChangeOfferTemplate(orderLink) {
 `;
 }
 
-export function ratingEmailTemplate(
+function ratingEmailTemplateDefault(
   orderLink,
   rating = 5,
   customerName = "A customer",
@@ -417,7 +419,7 @@ export function ratingEmailTemplate(
 `;
 }
 
-export function offerAcceptedTemplate(orderLink) {
+function offerAcceptedTemplateDefault(orderLink) {
   return `
 <!DOCTYPE html>
 <html>
@@ -546,7 +548,7 @@ export function offerAcceptedTemplate(orderLink) {
 `;
 }
 
-export function buttonTemplate(
+function buttonTemplateDefault(
   orderLink,
   title = "BINS APP Update",
   description = "You have a new update on your order. Open the app to review the details.",
@@ -1107,7 +1109,7 @@ export function buttonTemplate(
  * @param {string} notes        - The rejection reason / notes from the admin.
  * @param {string} serviceLabel - Human-readable service name, e.g. "Junk Removal".
  */
-export function serviceRejectedTemplate(userName, notes, serviceLabel) {
+function serviceRejectedTemplateDefault(userName, notes, serviceLabel) {
   return `
 <!DOCTYPE html>
 <html>
@@ -1199,7 +1201,7 @@ export function serviceRejectedTemplate(userName, notes, serviceLabel) {
  * @param {string} userName     - The applicant's display name.
  * @param {string} serviceLabel - Human-readable service name, e.g. "Tree Removal".
  */
-export function serviceApprovedTemplate(userName, serviceLabel) {
+function serviceApprovedTemplateDefault(userName, serviceLabel) {
   return `
 <!DOCTYPE html>
 <html>
@@ -1294,7 +1296,7 @@ export function serviceApprovedTemplate(userName, serviceLabel) {
  * @param {string} userName     - The applicant's display name.
  * @param {string} serviceLabel - Human-readable service name(s), e.g. "Junk Removal".
  */
-export function servicePendingReviewTemplate(userName = "Partner", serviceLabel = "Service Offerings") {
+function servicePendingReviewTemplateDefault(userName = "Partner", serviceLabel = "Service Offerings") {
   const safeName = userName || "Partner";
   const safeLabel = serviceLabel || "Service Offerings";
 
@@ -1388,7 +1390,7 @@ export function servicePendingReviewTemplate(userName = "Partner", serviceLabel 
 `;
 }
 
-export function orderAssignedDriverTemplate({
+function orderAssignedDriverTemplateDefault({
   assignLink,
   driverName = "Driver",
   orderNumber = "",
@@ -1599,3 +1601,81 @@ export function orderAssignedDriverTemplate({
 </html>
 `;
 }
+
+/* ---------------------------------------------------------------------------
+ * Public builders. Same signatures as before; when an admin has customised the
+ * matching system template (Templates page → System), that version is used.
+ * ------------------------------------------------------------------------- */
+const starsFor = (rating) => {
+  const r = Math.max(0, Math.min(5, Math.round(Number(rating) || 0)));
+  return "★".repeat(r) + "☆".repeat(5 - r);
+};
+
+export function orderChangeOfferTemplate(orderLink) {
+  return applyTemplateOverride("order_change_offer", { orderLink }, orderChangeOfferTemplateDefault(orderLink));
+}
+
+export function ratingEmailTemplate(orderLink, rating = 5, customerName = "A customer") {
+  return applyTemplateOverride(
+    "rating_received",
+    { orderLink, rating, stars: starsFor(rating), customerName },
+    ratingEmailTemplateDefault(orderLink, rating, customerName),
+  );
+}
+
+export function offerAcceptedTemplate(orderLink) {
+  return applyTemplateOverride("offer_accepted", { orderLink }, offerAcceptedTemplateDefault(orderLink));
+}
+
+export function buttonTemplate(orderLink, title, description) {
+  const html = buttonTemplateDefault(orderLink, title, description);
+  return applyTemplateOverride(
+    "order_update_button",
+    { orderLink, title: title || "BINS APP Update", description: description || "" },
+    html,
+  );
+}
+
+export function serviceRejectedTemplate(userName, notes, serviceLabel) {
+  return applyTemplateOverride(
+    "service_rejected",
+    { userName, notes, serviceLabel },
+    serviceRejectedTemplateDefault(userName, notes, serviceLabel),
+  );
+}
+
+export function serviceApprovedTemplate(userName, serviceLabel) {
+  return applyTemplateOverride(
+    "service_approved",
+    { userName, serviceLabel },
+    serviceApprovedTemplateDefault(userName, serviceLabel),
+  );
+}
+
+export function servicePendingReviewTemplate(userName = "Partner", serviceLabel = "Service Offerings") {
+  return applyTemplateOverride(
+    "service_pending_review",
+    { userName: userName || "Partner", serviceLabel: serviceLabel || "Service Offerings" },
+    servicePendingReviewTemplateDefault(userName, serviceLabel),
+  );
+}
+
+export function orderAssignedDriverTemplate(args = {}) {
+  return applyTemplateOverride(
+    "order_assigned_driver",
+    { driverName: "Driver", ...args },
+    orderAssignedDriverTemplateDefault(args),
+  );
+}
+
+/** Code defaults, used by utils/systemTemplates.js to seed the editable copies. */
+export const EMAIL_TEMPLATE_DEFAULTS = {
+  orderChangeOfferTemplateDefault,
+  ratingEmailTemplateDefault,
+  offerAcceptedTemplateDefault,
+  buttonTemplateDefault,
+  serviceRejectedTemplateDefault,
+  serviceApprovedTemplateDefault,
+  servicePendingReviewTemplateDefault,
+  orderAssignedDriverTemplateDefault,
+};

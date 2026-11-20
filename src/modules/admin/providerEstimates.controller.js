@@ -3,6 +3,9 @@ import User from "../../models/User.js";
 import Order from "../../models/Order.js";
 import logger from "../../config/logger.js";
 import { sendSMS } from "../../utils/sendSMS.js";
+import providerLeadsService from "../provider_leads/service.js";
+import { originFilter, attachRepeats, leadOrigin } from "../../utils/leadOrigin.js";
+export { attachRepeats, leadOrigin };
 
 /**
  * Get all Provider Leads & Estimates across the platform for Super Admin oversight
@@ -13,9 +16,12 @@ export async function getAdminProviderEstimates(req, res) {
     const limit = Math.max(1, Math.min(100, parseInt(req.query.limit) || 15));
     const skip = (page - 1) * limit;
 
-    const { status, serviceType, search, providerId } = req.query;
+    const { status, serviceType, search, providerId, origin } = req.query;
 
     const filter = {};
+    const and = [];
+    const byOrigin = originFilter(origin);
+    if (byOrigin) and.push(byOrigin);
 
     if (status && status !== "all") {
       if (status === "accepted" || status === "converted") {
@@ -45,15 +51,16 @@ export async function getAdminProviderEstimates(req, res) {
 
     if (search && search.trim()) {
       const q = search.trim();
-      filter.$or = [
+      and.push({ $or: [
         { leadNumber: { $regex: q, $options: "i" } },
         { "customerInfo.name": { $regex: q, $options: "i" } },
         { "customerInfo.email": { $regex: q, $options: "i" } },
         { "customerInfo.phone": { $regex: q, $options: "i" } },
         { "customerInfo.city": { $regex: q, $options: "i" } },
         { projectType: { $regex: q, $options: "i" } },
-      ];
+      ] });
     }
+    if (and.length) filter.$and = and;
 
     const [
       leads,
@@ -68,6 +75,8 @@ export async function getAdminProviderEstimates(req, res) {
       junkRemovalCount,
       treeRemovalCount,
       sumAccepted,
+      byCustomerCount,
+      byOwnerCount,
     ] = await Promise.all([
       ProviderLead.find(filter)
         .populate("provider", "name email phone comp_name profilePicture address city state zip rating avgRating")
@@ -103,6 +112,8 @@ export async function getAdminProviderEstimates(req, res) {
           },
         },
       ]),
+      ProviderLead.countDocuments(originFilter("customer")),
+      ProviderLead.countDocuments(originFilter("owner")),
     ]);
 
     const acceptedTotal = acceptedCount + convertedCount;
@@ -111,7 +122,7 @@ export async function getAdminProviderEstimates(req, res) {
     return res.status(200).json({
       success: true,
       data: {
-        leads,
+        leads: await attachRepeats(leads),
         pagination: {
           total,
           page,
@@ -128,6 +139,8 @@ export async function getAdminProviderEstimates(req, res) {
           junkRemoval: junkRemovalCount,
           treeRemoval: treeRemovalCount,
           totalRevenue: totalPipelineValue,
+          byCustomer: byCustomerCount,
+          byOwner: byOwnerCount,
         },
       },
     });
@@ -160,9 +173,10 @@ export async function getAdminProviderEstimateById(req, res) {
       });
     }
 
+    const [withRepeat] = await attachRepeats([lead]);
     return res.status(200).json({
       success: true,
-      data: lead,
+      data: withRepeat,
     });
   } catch (error) {
     logger.error("getAdminProviderEstimateById error:", error);
@@ -213,6 +227,145 @@ export async function nudgeProviderForEstimate(req, res) {
     return res.status(500).json({
       success: false,
       message: error.message || "Failed to nudge provider",
+    });
+  }
+}
+
+/**
+ * Super Admin: Create a new Lead and/or Estimate directly
+ */
+export async function createAdminEstimate(req, res) {
+  try {
+    let {
+      providerId,
+      customerId,
+      customerInfo,
+      serviceType,
+      dumpsterSize,
+      projectType,
+      startDate,
+      numDays,
+      placementNotes,
+      drivewayProtection,
+      initialEstimate,
+      autoCreateCustomer,
+      unitId,
+    } = req.body;
+
+    // If providerId not explicitly given, try to find an active provider
+    if (!providerId) {
+      const defaultProvider = await User.findOne({ role: "renter" }).select("_id").lean();
+      if (!defaultProvider) {
+        return res.status(400).json({
+          success: false,
+          message: "No registered providers found. Please create or register a provider first.",
+        });
+      }
+      providerId = defaultProvider._id;
+    }
+
+    const lead = await providerLeadsService.createProviderManualLead({
+      providerId,
+      customerId,
+      customerInfo,
+      serviceType: serviceType || "Dumbster",
+      dumpsterSize: dumpsterSize || "20",
+      projectType: projectType || "General Cleanout",
+      startDate: startDate || null,
+      numDays: Number(numDays || 3),
+      placementNotes: placementNotes || "",
+      drivewayProtection: drivewayProtection !== false,
+      source: "admin_entry",
+      createdBy: "admin",
+      initialEstimate: initialEstimate || null,
+      autoCreateCustomer: autoCreateCustomer !== false,
+      unitId: unitId || null,
+    });
+
+    return res.status(201).json({
+      success: true,
+      message: "Lead & estimate created successfully by Admin.",
+      data: lead,
+    });
+  } catch (error) {
+    logger.error("createAdminEstimate error:", error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Failed to create estimate",
+    });
+  }
+}
+
+/**
+ * Super Admin: Get list of active providers for estimate assignment
+ */
+export async function getAdminProvidersList(req, res) {
+  try {
+    const providers = await User.find({ role: "renter" })
+      .select("_id name email phone comp_name address city state zip")
+      .sort({ comp_name: 1, name: 1 })
+      .lean();
+
+    return res.status(200).json({
+      success: true,
+      data: providers,
+    });
+  } catch (error) {
+    logger.error("getAdminProvidersList error:", error);
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Failed to fetch providers list",
+    });
+  }
+}
+
+/**
+ * Super Admin: Submit or update estimate pricing on an existing lead
+ */
+export async function submitAdminEstimate(req, res) {
+  try {
+    const { id } = req.params;
+    const lead = await ProviderLead.findById(id);
+    if (!lead) {
+      return res.status(404).json({ success: false, message: "Lead record not found." });
+    }
+
+    const {
+      estimatedPrice,
+      includedTons,
+      rentalDays,
+      extraDayPrice,
+      overagePerTon,
+      deliveryFee,
+      validDays,
+      providerNotes,
+    } = req.body;
+
+    const updatedLead = await providerLeadsService.createOrUpdateEstimate(
+      id,
+      lead.provider,
+      {
+        estimatedPrice,
+        includedTons,
+        rentalDays,
+        extraDayPrice,
+        overagePerTon,
+        deliveryFee,
+        validDays,
+        providerNotes,
+      }
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Estimate updated and dispatched successfully.",
+      data: updatedLead,
+    });
+  } catch (error) {
+    logger.error("submitAdminEstimate error:", error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Failed to update estimate",
     });
   }
 }

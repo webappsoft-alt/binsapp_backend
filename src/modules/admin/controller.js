@@ -284,8 +284,8 @@ export async function adminSendNotifications(req, res, next) {
 
 export async function getDashBoardUsersStats(req, res, next) {
   try {
-    const { type } = req.query;
-    const users = await adminService.getDashBoardUsersStats(type);
+    const { type, startDate, endDate } = req.query;
+    const users = await adminService.getDashBoardUsersStats(type, startDate, endDate);
     res.status(200).json({
       success: true,
       message: "Users stats fetched successfully",

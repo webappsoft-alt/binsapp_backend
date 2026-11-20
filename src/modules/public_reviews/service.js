@@ -34,6 +34,11 @@ class PublicReviewService {
     };
   }
 
+  async getPublicReviewById(id) {
+    const publicReview = await PublicReviews.findById(id).lean();
+    return publicReview;
+  }
+
   async deletePublicReview(id) {
     const publicReview = await PublicReviews.findByIdAndUpdate(
       id,

@@ -4,6 +4,7 @@ import {
   deletePublicReview,
   getAllPublicReviewsForWebsite,
   getAllPublicReviewsbyAdmin,
+  getPublicReviewById,
 } from "./controller.js";
 import { validate } from "../../middlewares/validate.js";
 import {
@@ -175,6 +176,8 @@ router.get(
   validate(getAllPublicReviewsValidation),
   getAllPublicReviewsbyAdmin,
 );
+
+router.get("/:id", getPublicReviewById);
 
 /**
  * @swagger

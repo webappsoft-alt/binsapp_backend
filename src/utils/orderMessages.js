@@ -19,6 +19,21 @@ export function serviceLabel(serviceType) {
   return SERVICE_LABELS[serviceType] || serviceType || "service";
 }
 
+/**
+ * Job type in capitals for owner job alerts, so it is impossible to miss whether
+ * the job is a dumpster rental or a junk removal job (push titles show in bold).
+ */
+const JOB_ALERT_TITLES = {
+  Dumbster: "DUMPSTER RENTAL JOB",
+  "Porta Potty": "PORTA POTTY RENTAL JOB",
+  "Junk Removal": "JUNK REMOVAL JOB",
+  "Tree Removal": "TREE REMOVAL JOB",
+};
+
+export function jobAlertTitle(serviceType) {
+  return JOB_ALERT_TITLES[serviceType] || `NEW ${String(serviceLabel(serviceType)).toUpperCase()} JOB`;
+}
+
 export function orderRef(order) {
   if (!order) return "#unknown";
   if (order.orderNumber) return `#${order.orderNumber}`;
@@ -68,8 +83,9 @@ export const orderMessages = {
         admin: `${customer} created ${service} request ${ref}; searching for providers.`,
       },
       operator: {
-        title: "New Service Request",
-        description: `${customer} requested a ${service} ${ref}. Accept to claim.`,
+        title: `New ${jobAlertTitle(ctx.serviceType || ctx.service_type)}`,
+        jobType: jobAlertTitle(ctx.serviceType || ctx.service_type),
+        description: `${jobAlertTitle(ctx.serviceType || ctx.service_type)} — ${customer} needs ${service} ${ref}. Tap to accept.`,
       },
       admin: {
         title: "New Service Request",
@@ -451,8 +467,9 @@ export const orderMessages = {
     const { customer, service, ref } = actors(ctx);
     return {
       operator: {
-        title: "New Service Request",
-        description: `${customer} requested a ${service} ${ref}. Accept to claim.`,
+        title: `New ${jobAlertTitle(ctx.serviceType || ctx.service_type)}`,
+        jobType: jobAlertTitle(ctx.serviceType || ctx.service_type),
+        description: `${jobAlertTitle(ctx.serviceType || ctx.service_type)} — ${customer} needs ${service} ${ref}. Tap to accept.`,
       },
     };
   },
