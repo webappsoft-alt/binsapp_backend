@@ -133,6 +133,10 @@ const orderSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    // Soft delete: admin "Delete order" keeps the record for history (Orders → Deleted tab).
+    isDeleted: { type: Boolean, default: false, index: true },
+    deletedAt: { type: Date, default: null },
+    deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
     userIds: [
       {
         type: mongoose.Schema.Types.ObjectId,
@@ -653,5 +657,48 @@ orderSchema.index({ company: 1, status: 1, createdAt: -1 });
 orderSchema.index({ user: 1, status: 1, start_date: 1 });
 orderSchema.index({ company: 1, status: 1, start_date: 1 });
 orderSchema.index({ company: 1, createdAt: -1 });
+
+/*
+ * Deleted orders are hidden from every query by default (customer & provider apps, stats,
+ * dashboards…). A query that mentions `isDeleted` itself, or passes the `withDeleted`
+ * option (`.setOptions({ withDeleted: true })`), sees them — that's how the admin
+ * Orders → Deleted tab and admin order details read them.
+ */
+const mentionsIsDeleted = (filter) => {
+  if (!filter || typeof filter !== "object") return false;
+  if (Object.prototype.hasOwnProperty.call(filter, "isDeleted")) return true;
+  return ["$and", "$or", "$nor"].some(
+    (k) => Array.isArray(filter[k]) && filter[k].some((f) => mentionsIsDeleted(f)),
+  );
+};
+
+function hideDeleted() {
+  if (this.getOptions?.().withDeleted) return;
+  if (mentionsIsDeleted(this.getFilter())) return;
+  this.where({ isDeleted: { $ne: true } });
+}
+
+for (const op of [
+  "find",
+  "findOne",
+  "countDocuments",
+  "count",
+  "distinct",
+  "findOneAndUpdate",
+  "updateMany",
+  "updateOne",
+]) {
+  orderSchema.pre(op, hideDeleted);
+}
+
+orderSchema.pre("aggregate", function hideDeletedAggregate() {
+  if (this.options?.withDeleted) return;
+  const pipeline = this.pipeline();
+  if (pipeline.some((stage) => stage.$match && mentionsIsDeleted(stage.$match))) return;
+  // $geoNear / $search / $vectorSearch must stay first.
+  const first = pipeline[0] ? Object.keys(pipeline[0])[0] : null;
+  const at = ["$geoNear", "$search", "$vectorSearch", "$searchMeta"].includes(first) ? 1 : 0;
+  pipeline.splice(at, 0, { $match: { isDeleted: { $ne: true } } });
+});
 
 export default mongoose.model("Order", orderSchema);

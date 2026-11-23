@@ -106,6 +106,7 @@ export async function getAllUsers(req, res, next) {
       portaPotty,
       access_types = "all",
       isInsured,
+      rating,
     } = req.query;
     let query = {};
     let conditions = [];
@@ -190,6 +191,30 @@ export async function getAllUsers(req, res, next) {
           { insuranceFile: "" },
         ],
       });
+    }
+
+    // Rating filter (average star rating + review count kept on the user).
+    switch (String(rating || "")) {
+      case "5":
+        conditions.push({ total_reviews: { $gt: 0 }, rating: { $gte: 4.75 } });
+        break;
+      case "4plus":
+        conditions.push({ total_reviews: { $gt: 0 }, rating: { $gte: 4 } });
+        break;
+      case "3plus":
+        conditions.push({ total_reviews: { $gt: 0 }, rating: { $gte: 3 } });
+        break;
+      case "below3":
+        conditions.push({ total_reviews: { $gt: 0 }, rating: { $lt: 3 } });
+        break;
+      case "rated":
+        conditions.push({ total_reviews: { $gt: 0 } });
+        break;
+      case "none":
+        conditions.push({ $or: [{ total_reviews: { $in: [0, null] } }, { total_reviews: { $exists: false } }] });
+        break;
+      default:
+        break;
     }
 
     if (search) {

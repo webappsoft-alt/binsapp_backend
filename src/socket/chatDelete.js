@@ -58,7 +58,7 @@ export function registerChatDeleteHandlers(socket, io, uploadedUrls) {
       if (!me) return cb({ success: false, error: "Not signed in" });
       const msg = await Message.findById(data.messageId).lean();
       if (!msg) return cb({ success: false, error: "Message not found" });
-      if (String(msg.senderId) !== me) return cb({ success: false, error: "You can only delete your own files" });
+      if (String(msg.senderId) !== me) return cb({ success: false, error: "You can only delete your own messages" });
       if (msg.isDeleted) return cb({ success: true, messageId: String(msg._id) });
 
       const url = msg.attachment?.url;

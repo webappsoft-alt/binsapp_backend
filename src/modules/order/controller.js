@@ -431,7 +431,10 @@ export const adminOrder = async (req, res, next) => {
   try {
     const { page = 1, limit = 10, status, customerId, ownerId, search } = req.query;
     let query = {};
-    if (status) {
+    if (status === "deleted") {
+      // Orders → Deleted tab: soft-deleted orders only.
+      query.isDeleted = true;
+    } else if (status) {
       query.status = status;
     }
 
@@ -586,7 +589,7 @@ export const getOrderTimeline = async (req, res, next) => {
 export const adminDeleteOrder = async (req, res, next) => {
   try {
     const orderId = req.params.id;
-    const updatedSession = await orderService.deleteAdminOrder(orderId);
+    const updatedSession = await orderService.deleteAdminOrder(orderId, req.user?._id || null);
     res.status(200).json({
       success: true,
       message: "Order deleted successfully",
@@ -1283,7 +1286,9 @@ export const getAdminOrderById = async (req, res, next) => {
       ? { $or: [{ _id: id }, { order_id: id }] }
       : { order_id: id };
 
+    // Admin can open deleted orders too (Orders → Deleted tab).
     const order = await Order.findOne(query)
+      .setOptions({ withDeleted: true })
       .populate([
         "user",
         "dumbster",

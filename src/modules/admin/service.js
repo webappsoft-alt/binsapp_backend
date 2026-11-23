@@ -1,6 +1,7 @@
 import mongoose from "mongoose";
 import Dustbin from "../../models/Dustbin.js";
 import User from "../../models/User.js";
+import { invalidateAuthUserCache } from "../../middlewares/auth.js";
 import Order from "../../models/Order.js";
 import logger from "../../config/logger.js";
 import Support from "../../models/Support.js";
@@ -257,12 +258,22 @@ class adminService {
         throw new NotFoundError("The User with the given ID was not found.");
       }
 
+      if (user.status === "deleted") return user;
+
+      // Same as a self-delete from the mobile app (users/service.js deleteUser):
+      // the account stays in the system under "Deleted", can't be recovered, and the
+      // phone/email are released so signing up again creates a brand-new account.
       const randomSuffix = generateOTP(10, { numeric: true, alphabet: true });
-      user.email = `${user.email}_deleted_${randomSuffix}`;
-      // user.phone = `${user.phone || ""}_deleted_${randomSuffix}`;
+      if (user.email && !/deleted/i.test(user.email)) {
+        user.email = `${user.email}deleted${randomSuffix}`;
+      }
+      if (user.phone && !/deleted/i.test(user.phone)) {
+        user.phone = `${user.phone}deleted${randomSuffix}`;
+      }
       user.status = "deleted";
-      await user.save();
+      await user.save({ validateBeforeSave: false });
       await Dustbin.updateMany({ user: userId }, { status: "deactive" });
+      invalidateAuthUserCache(String(user._id));
       return user;
     } catch (error) {
       logger.error("method adminDeleteUser in adminService failed", error);
@@ -272,6 +283,19 @@ class adminService {
   async adminUpdateUser(pathId, data) {
     // console.log("data", data);
     try {
+      const current = await User.findById(pathId).select("status").lean();
+      if (!current) {
+        throw new NotFoundError("The User with the given ID was not found.");
+      }
+      // Deleted accounts are final — no edits, no recovery.
+      if (current.status === "deleted") {
+        throw new BadRequestError("This account was deleted and can't be changed or recovered.");
+      }
+      // "Delete" sent through the edit route → run the real delete.
+      if (data?.status === "deleted") {
+        return this.adminDeleteUser(pathId);
+      }
+
       const updates = { ...data };
 
       // Cast radius to Number if provided

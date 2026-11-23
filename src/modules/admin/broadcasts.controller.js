@@ -37,9 +37,17 @@ function audienceQuery(audience, users, skipInactive) {
 
 const plainName = (u) => u?.name || u?.email?.split("@")[0] || "there";
 
-/** Wrap editor HTML in the branded layout unless it's already a full email document. */
-function buildEmailHtml(html, subject, branded) {
+/**
+ * Wrap editor HTML in the branded layout unless it's already a full email document.
+ * A template the admin picked is never wrapped — it goes out exactly as designed.
+ */
+function buildEmailHtml(html, subject, branded, fromTemplate = false) {
   if (!html) return "";
+  if (fromTemplate) {
+    return /<html[\s>]/i.test(html)
+      ? html
+      : `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="margin:0">${html}</body></html>`;
+  }
   if (/<html[\s>]/i.test(html) || !branded) return html;
   return applyTemplateOverride("partner_update", { subject, description: html }, partnerUpdateEmailHtml(subject, html));
 }
@@ -70,7 +78,8 @@ async function runBroadcast(broadcastId, recipients, payload, settings) {
           fcmtoken: u.fcmtoken || "",
           imageUrl: push.imageUrl || "",
           type: "admin-noti",
-          metadata: { broadcastId: String(broadcastId) },
+          // Keep the picture on the in-app notification too, so the app's list can show it.
+          metadata: { broadcastId: String(broadcastId), ...(push.imageUrl ? { imageUrl: push.imageUrl } : {}) },
         });
         results.push.sent += 1;
         row.push = "sent";
@@ -88,7 +97,12 @@ async function runBroadcast(broadcastId, recipients, payload, settings) {
       } else {
         results.email.attempted += 1;
         const subject = renderTemplateString(email.subject, vars);
-        const html = buildEmailHtml(renderTemplateString(email.html, vars), subject, settings.email?.useBrandedLayout !== false);
+        const html = buildEmailHtml(
+          renderTemplateString(email.html, vars),
+          subject,
+          settings.email?.useBrandedLayout !== false,
+          Boolean(email.templateId),
+        );
         const r = await sendEmail({ to: u.email, subject, html });
         if (r?.success) {
           results.email.sent += 1;
@@ -108,12 +122,15 @@ async function runBroadcast(broadcastId, recipients, payload, settings) {
       } else {
         results.sms.attempted += 1;
         let body = renderTemplateString(sms.body, vars);
+        // Template picture: share its link in the text. MMS isn't supported for every
+        // country / alphanumeric sender — a link always works.
+        const smsImage = sms.imageUrl || sms.mediaUrl;
+        if (smsImage) body = `${body}\nView: ${smsImage}`;
         if (settings.sms?.appendFooter && settings.sms?.footer) body = `${body}\n${settings.sms.footer}`;
         try {
           const r = await sendSMS({
             to: u.phone,
             body,
-            mediaUrl: sms.mediaUrl || undefined,
             type: "general",
             metadata: { broadcastId: String(broadcastId), userId: String(u._id) },
           });
@@ -161,7 +178,7 @@ export async function createBroadcast(req, res, next) {
     if (wanted.includes("email") && (!email.subject?.trim() || !email.html?.trim()))
       throw new BadRequestError("Email subject and content are required");
     if (wanted.includes("sms")) {
-      if (!sms.body?.trim() && !sms.mediaUrl) throw new BadRequestError("SMS text is required");
+      if (!sms.body?.trim() && !sms.mediaUrl && !sms.imageUrl) throw new BadRequestError("SMS text is required");
       if ((sms.body || "").length > 1600) throw new BadRequestError("SMS text is longer than 1600 characters");
     }
 
@@ -183,7 +200,7 @@ export async function createBroadcast(req, res, next) {
       email: wanted.includes("email")
         ? { subject: email.subject, html: email.html, templateId: email.templateId || null, templateTitle }
         : undefined,
-      sms: wanted.includes("sms") ? { body: sms.body, mediaUrl: sms.mediaUrl } : undefined,
+      sms: wanted.includes("sms") ? { body: sms.body, mediaUrl: sms.imageUrl || sms.mediaUrl } : undefined,
       recipientCount: recipients.length,
       status: "sending",
       sentBy: req.user?._id || null,

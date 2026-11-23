@@ -181,6 +181,29 @@ export async function sendOtp(phone, hash) {
     });
 
     let existingUser = await findUserByPhone(normalizedPhone);
+
+    // A deleted account must not block the number forever (phone is unique).
+    // Release the phone on the deleted record, then sign up a fresh account.
+    if (existingUser && existingUser.status === "deleted") {
+      const suffix = Math.random().toString(36).slice(2, 12);
+      await User.updateOne(
+        { _id: existingUser._id },
+        {
+          $set: {
+            phone: `${existingUser.phone}deleted${suffix}`,
+            ...(existingUser.email && !/deleted/i.test(existingUser.email)
+              ? { email: `${existingUser.email}_deleted_${suffix}` }
+              : {}),
+          },
+        },
+      );
+      logger.info("sendOtp.released_deleted_phone", {
+        phone: normalizedPhone,
+        deletedUserId: String(existingUser._id),
+      });
+      existingUser = null;
+    }
+
     if (!existingUser) {
       // await assertPhoneCanReceiveSms(normalizedPhone);
       try {

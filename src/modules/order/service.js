@@ -1308,11 +1308,15 @@ class OrderService {
 
     return formatOrderPayload(order, role);
   }
-  async deleteAdminOrder(Id) {
+  async deleteAdminOrder(Id, deletedBy = null) {
     try {
-      const deletedSession = await Order.findByIdAndDelete({
-        _id: Id,
-      });
+      // Soft delete — the order stays in the system (admin Orders → Deleted tab) but is
+      // hidden from customers, providers, stats and every default query.
+      const deletedSession = await Order.findOneAndUpdate(
+        { _id: Id, isDeleted: { $ne: true } },
+        { $set: { isDeleted: true, deletedAt: new Date(), deletedBy } },
+        { new: true },
+      );
       if (deletedSession == null) {
         throw new NotFoundError("Order not found");
       }

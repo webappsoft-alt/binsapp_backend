@@ -191,6 +191,13 @@ export const INVOICE_VARIABLES = [
   { name: "total", label: "Total", sample: "$740.18" },
   { name: "amountPaid", label: "Amount paid", sample: "$200.00" },
   { name: "balanceDue", label: "Balance due", sample: "$540.18" },
+  { name: "headlineLabel", label: "Status headline (e.g. Balance due by …, Paid in full, Refunded)", sample: "Balance due by Dec 4, 2026" },
+  { name: "headlineAmount", label: "Amount for the headline", sample: "$540.18" },
+  { name: "paidLabel", label: "Paid row label (Paid / Paid — held in escrow)", sample: "Paid" },
+  { name: "refundedAmount", label: "Refunded amount (empty when nothing refunded)", sample: "" },
+  { name: "statusNote", label: "Status explanation", sample: "" },
+  { name: "statusColor", label: "Status colour (hex)", sample: "#d97706" },
+  { name: "statusBg", label: "Status background colour (hex)", sample: "#fef3c7" },
   { name: "paymentMethod", label: "Payment method", sample: "Card ending 4242" },
   { name: "notes", label: "Notes", sample: "Thank you for choosing BINS APP." },
 ];
@@ -240,8 +247,10 @@ const totalsBlock = `
         <tr><td class="muted">Tax ({{taxRate}})</td><td class="right">{{tax}}</td></tr>
         {{#discount}}<tr><td class="muted">Discount</td><td class="right">-{{discount}}</td></tr>{{/discount}}
         <tr class="grand"><td>Total</td><td class="right">{{total}}</td></tr>
-        <tr><td class="muted">Paid</td><td class="right">{{amountPaid}}</td></tr>
-        <tr class="due"><td>Balance due</td><td class="right">{{balanceDue}}</td></tr>`;
+        <tr><td class="muted">{{paidLabel}}</td><td class="right">{{amountPaid}}</td></tr>
+        {{#refundedAmount}}<tr><td class="muted">Refunded</td><td class="right" style="color:#dc2626">-{{refundedAmount}}</td></tr>{{/refundedAmount}}
+        <tr class="due"><td>Balance due</td><td class="right">{{balanceDue}}</td></tr>
+        {{#statusNote}}<tr><td colspan="2" style="padding-top:10px;font-size:12px;color:{{statusColor}}">{{statusNote}}</td></tr>{{/statusNote}}`;
 
 export const INVOICE_DESIGNS = [
   {
@@ -330,7 +339,7 @@ h1{margin:0;font-size:28px;letter-spacing:.06em;color:#0EBE3C}
     <div style="display:flex;gap:14px;align-items:center"><img src="{{logoUrl}}" alt=""/><div><h1>{{companyName}}</h1><div style="opacity:.75">{{companyEmail}} · {{companyPhone}}</div></div></div>
     <div class="right"><div style="opacity:.75">Invoice</div><div class="num">{{invoiceNumber}}</div></div>
   </div>
-  <div class="amount"><span>Balance due by {{dueDate}}</span><b>{{balanceDue}}</b></div>
+  <div class="amount" style="background:{{statusColor}}"><span>{{headlineLabel}}</span><b>{{headlineAmount}}</b></div>
   <div class="body">
     <div class="grid">
       <div class="card"><div class="label">Billed to</div><b>{{customerName}}</b><br/>{{customerEmail}}<br/>{{customerPhone}}</div>
@@ -375,7 +384,7 @@ h1{font-weight:300;font-size:40px;margin:0 0 4px;letter-spacing:-.02em}
   <div class="row">
     <div><div class="label">From</div>{{companyName}}<br/>{{companyAddress}}<br/>{{companyEmail}}</div>
     <div><div class="label">To</div>{{customerName}}<br/>{{customerAddress}}<br/>{{customerEmail}}</div>
-    <div class="right"><div class="label">Due</div>{{dueDate}}<br/><b>{{balanceDue}}</b></div>
+    <div class="right"><div class="label">{{status}}</div>{{headlineLabel}}<br/><b style="color:{{statusColor}}">{{headlineAmount}}</b></div>
   </div>
   <table class="items">
     <thead><tr><th>Description</th><th class="right">Qty</th><th class="right">Price</th><th class="right">Total</th></tr></thead>
@@ -424,7 +433,7 @@ h1{font-weight:300;font-size:40px;margin:0 0 4px;letter-spacing:-.02em}
     <div><div class="label">Issue date</div>{{issueDate}}</div>
     <div><div class="label">Due date</div>{{dueDate}}</div>
     <div><div class="label">Order</div>{{orderNumber}}</div>
-    <div><div class="label">Status</div>{{status}}</div>
+    <div><div class="label">Status</div><b style="color:{{statusColor}}">{{status}}</b></div>
   </div>
   <div class="two">
     <div><div class="label">Bill to</div><b>{{customerName}}</b><br/>{{customerAddress}}<br/>{{customerEmail}} · {{customerPhone}}</div>
@@ -438,7 +447,7 @@ h1{font-weight:300;font-size:40px;margin:0 0 4px;letter-spacing:-.02em}
   </table>
   <table class="totals">${totalsBlock}
   </table>
-  <div class="foot"><b>Payment terms:</b> due by {{dueDate}} via {{paymentMethod}}. {{notes}}</div>
+  <div class="foot"><b>{{headlineLabel}}</b> — {{headlineAmount}} via {{paymentMethod}}. {{notes}}</div>
 </div>`,
     ),
   },
@@ -464,8 +473,9 @@ h1{font-weight:300;font-size:40px;margin:0 0 4px;letter-spacing:-.02em}
   <div class="c">
     <img src="{{logoUrl}}" alt=""/>
     <div style="font-weight:700;margin-top:6px">{{companyName}}</div>
-    <div class="paid">{{status}}</div>
-    <div class="big">{{total}}</div>
+    <div class="paid" style="background:{{statusBg}};color:{{statusColor}}">{{status}}</div>
+    <div class="big">{{headlineAmount}}</div>
+    <div class="muted" style="margin-bottom:4px">{{headlineLabel}}</div>
     <div class="muted">{{invoiceNumber}} · {{issueDate}}</div>
   </div>
   <div class="dash"></div>
