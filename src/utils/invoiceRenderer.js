@@ -325,7 +325,25 @@ export function buildBillingInvoiceData(record) {
 const APP_FONT_TAGS = `<link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&display=swap" rel="stylesheet" crossorigin="anonymous" />
-<style>html,body,table,td,th,div,span,p,h1,h2,h3,h4,b,strong{font-family:'Geist',ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif !important}</style>`;
+<style>html,body,table,td,th,div,span,p,h1,h2,h3,h4,b,strong{font-family:'Geist',ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif !important}
+img{max-width:100%}
+/* Phones: invoice fills the screen, side-by-side boxes stack, nothing gets cut off. */
+@media (max-width:640px){
+  body{padding:0 !important;background:#fff !important;font-size:13px !important}
+  .sheet{max-width:none !important;width:100% !important;border-radius:0 !important;box-shadow:none !important;border-left:0 !important;border-right:0 !important}
+  .sheet,.body,.band,.amount,.foot{padding-left:16px !important;padding-right:16px !important}
+  .sheet{padding-top:16px !important;padding-bottom:16px !important}
+  .band,.amount{padding-top:16px !important;padding-bottom:16px !important}
+  .band,.grid,.row,.two,.top,.boxes{flex-direction:column !important;align-items:stretch !important;gap:10px !important}
+  .band .right,.row .right{text-align:left !important}
+  .boxes>div{border-right:0 !important;border-bottom:1px solid #cbd5e1}
+  .boxes>div:last-child{border-bottom:0}
+  .amount b{font-size:22px !important}
+  h1{font-size:22px !important}
+  .totals{width:100% !important;margin-left:0 !important}
+  .items th,.items td{padding-left:4px !important;padding-right:4px !important;font-size:12px}
+  .items th:first-child,.items td:first-child{padding-left:0 !important}
+}</style>`;
 
 function withAppFont(html) {
   if (!html) return html;

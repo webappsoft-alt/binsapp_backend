@@ -217,13 +217,21 @@ export async function getAllUsers(req, res, next) {
         break;
     }
 
-    if (search) {
-      const searchQuery = search;
+    // Trim (a "+" sent unencoded in a URL arrives as a leading space) and escape, so
+    // "+92 309…" or "a.b@x.com" are matched literally instead of as broken regexes.
+    const searchText = String(search || "").trim().slice(0, 100);
+    if (searchText) {
+      const rx = new RegExp(searchText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+      // Phone numbers in any format: "+92 309-6811835", "923096811835", "03096811835".
+      const digits = searchText.replace(/\D/g, "").replace(/^0+/, "");
+      const phoneRx = digits.length >= 6 ? new RegExp(digits.split("").join("[\\s\\-().]*")) : null;
       conditions.push({
         $or: [
-          { name: { $regex: searchQuery, $options: "i" } },
-          { email: { $regex: searchQuery, $options: "i" } },
-          { phone: { $regex: searchQuery, $options: "i" } },
+          { name: rx },
+          { comp_name: rx },
+          { email: rx },
+          { phone: rx },
+          ...(phoneRx ? [{ phone: phoneRx }] : []),
         ],
       });
     }
