@@ -9,6 +9,12 @@ export const registerSchema = Joi.object({
   lat: Joi.number().optional(),
   lng: Joi.number().optional(),
   address: Joi.string().optional(),
+  // Root GeoJSON point (lng, lat) — without this key stripUnknown drops it and
+  // the user keeps empty coordinates, so the web middleware treats location as missing.
+  location: Joi.object({
+    type: Joi.string().valid("Point").required(),
+    coordinates: Joi.array().items(Joi.number()).length(2).required(),
+  }).optional(),
   // status: Joi.string().optional().default("active"),
   radius: Joi.number().optional().allow(null).allow(""),
   driving_license: Joi.string().allow(null, "").optional(),
