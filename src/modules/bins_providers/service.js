@@ -9,6 +9,7 @@ import Order from "../../models/Order.js";
 import Rating from "../../models/Rating.js";
 import logger from "../../config/logger.js";
 import { NotFoundError } from "../../utils/apiError.js";
+import { evaluateJunkEligibility } from "../../utils/junkEligibility.js";
 
 /**
  * Calculates distance in miles between two coordinates via Haversine formula
@@ -273,23 +274,31 @@ class BinsProvidersService {
 
       const dumpsterBins = userBins.filter((b) => Boolean(b.dumbster));
       const portaPottyBins = userBins.filter((b) => Boolean(b.portaPotty));
+      const activeVerifiedDumpsterBins = userBins.filter(
+        (b) =>
+          !b.portaPotty &&
+          b.verify === true &&
+          !b.rejected &&
+          b.status === "active",
+      );
+      const binInsuranceFile =
+        activeVerifiedDumpsterBins.find(
+          (b) => typeof b.insurancefile === "string" && b.insurancefile.trim(),
+        )?.insurancefile || null;
 
       const hasDumpsters = Boolean(
         dumpsterBins.length > 0 || Number(u.binsCount) > 0
       );
 
-      const hasJunkInsurance = Boolean(
-        u.isInsured ||
-          u.insuranceFile ||
-          (junkProfile && (junkProfile.COI || junkProfile.isCOIAApproved))
-      );
-      const hasJunkRemoval = Boolean(
-        u.role === "renter" ||
-          u.type === "renter" ||
-          (junkProfile && junkProfile.status !== "rejected" && hasJunkInsurance) ||
-          (u.junkRemoval && hasJunkInsurance) ||
-          (u.access_types === "junkRemoval" && hasJunkInsurance)
-      );
+      const junkEligibility = evaluateJunkEligibility({
+        user: u,
+        junkProfile,
+        treeProfile,
+        activeBinsCount: activeVerifiedDumpsterBins.length,
+        binInsuranceFile,
+      });
+      const hasJunkInsurance = junkEligibility.hasInsuranceFile;
+      const hasJunkRemoval = junkEligibility.eligible;
 
       const hasTreeLicense = Boolean(
         treeProfile?.Tree_removal_license ||
@@ -723,19 +732,27 @@ class BinsProvidersService {
       ),
     ];
 
-    // 5b. Junk Removal check (requires profile and verified insurance COI file)
-    const hasJunkInsurance = Boolean(
-      user.isInsured ||
-        user.insuranceFile ||
-        (junkProfile && (junkProfile.COI || junkProfile.isCOIAApproved))
+    // 5b. Junk Removal check (active verified dumpster bins + insurance file, or approved junk app + COI)
+    const activeVerifiedDumpsterBins = dustbins.filter(
+      (b) =>
+        !b.portaPotty &&
+        b.verify === true &&
+        !b.rejected &&
+        b.status === "active",
     );
-    const hasJunkRemoval = Boolean(
-      user.role === "renter" ||
-        user.type === "renter" ||
-        (junkProfile && junkProfile.status !== "rejected" && hasJunkInsurance) ||
-        (user.junkRemoval && hasJunkInsurance) ||
-        (user.access_types === "junkRemoval" && hasJunkInsurance)
-    );
+    const binInsuranceFile =
+      activeVerifiedDumpsterBins.find(
+        (b) => typeof b.insurancefile === "string" && b.insurancefile.trim(),
+      )?.insurancefile || null;
+    const junkEligibility = evaluateJunkEligibility({
+      user,
+      junkProfile,
+      treeProfile,
+      activeBinsCount: activeVerifiedDumpsterBins.length,
+      binInsuranceFile,
+    });
+    const hasJunkInsurance = junkEligibility.hasInsuranceFile;
+    const hasJunkRemoval = junkEligibility.eligible;
 
     // 5c. Tree Removal check (requires tree removal license / credentials and insurance)
     const hasTreeLicense = Boolean(
@@ -778,8 +795,8 @@ class BinsProvidersService {
         isAvailable: hasJunkRemoval,
         hasInsurance: hasJunkInsurance,
         status:
-          junkProfile?.status || (user.isInsured ? "approved" : "unregistered"),
-        coiFile: user.insuranceFile || junkProfile?.COI || null,
+          junkProfile?.status || (hasJunkRemoval ? "approved" : "unregistered"),
+        coiFile: junkEligibility.insuranceFile || null,
       },
       "Tree Removal": {
         serviceName: "Tree Services",
@@ -854,7 +871,7 @@ class BinsProvidersService {
               junkProfile?.sameDayAvailable || user.same_day_availability
             ),
             status: junkProfile?.status || "approved",
-            coiFile: user.insuranceFile || junkProfile?.COI || null,
+            coiFile: junkEligibility.insuranceFile || null,
             isInsured: hasJunkInsurance,
             radius: Number(junkProfile?.radius) || Number(user.radius) || 25,
           }

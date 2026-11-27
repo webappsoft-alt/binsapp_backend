@@ -34,6 +34,7 @@ import {
   getRenterCustomerDetail,
   checkRenterCustomerExistsController,
   createRenterCustomerController,
+  addRenterCustomerController,
   sendRenterCrmFollowupController,
   markReadyToPickup,
   emailOrderInvoiceController,
@@ -257,6 +258,7 @@ router.get("/renter/calendar", getRenterCalendarOrders);
 router.get("/renter/reports-analytics", getRenterReportsAnalytics);
 router.post("/renter/customers-directory/check", authenticate, checkRenterCustomerExistsController);
 router.post("/renter/customers-directory/create", authenticate, createRenterCustomerController);
+router.post("/renter/customers-directory/add", authenticate, addRenterCustomerController);
 router.get("/renter/customers-directory", getRenterCustomersDirectory);
 router.get("/renter/customers-directory/:customerId", getRenterCustomerDetail);
 router.post("/renter/crm/send-followup", sendRenterCrmFollowupController);

@@ -16,6 +16,7 @@ import { sendNotification } from "../../utils/notifications.js";
 import { servicePendingReviewTemplate } from "../../utils/emailTemplate.js";
 import logger from "../../config/logger.js";
 import { invalidateAuthUserCache } from "../../middlewares/auth.js";
+import { hydrateOperatorsJunkEligibility } from "../../utils/junkEligibility.js";
 
 const generateRandomString = (length = 10) => {
   let result = "";
@@ -75,7 +76,8 @@ export async function userinfo(userId) {
   // (null only when they're already at the top tier).
   const currentTier = user.operatorStats?.tier ?? 1;
   const nextTier = await Tier.findOne({ level: currentTier + 1 }).lean();
-  return { ...user, nextTier: nextTier || null };
+  const [hydratedUser] = await hydrateOperatorsJunkEligibility([user]);
+  return { ...hydratedUser, nextTier: nextTier || null };
 }
 
 /**

@@ -181,6 +181,8 @@ export const quoteValidation = Joi.object({
   numDays: Joi.number().integer().min(1).optional(),
   num_days: Joi.number().integer().min(1).optional(),
   quantity: Joi.number().integer().min(1).max(100).optional(),
+  additionalTons: Joi.number().min(0).max(50).optional(),
+  extraTons: Joi.number().min(0).max(50).optional(),
   dumbsterId: Joi.string().optional().allow(null, ""),
   portaPottyId: Joi.string().optional().allow(null, ""),
   zip: Joi.string().optional().allow("", null),

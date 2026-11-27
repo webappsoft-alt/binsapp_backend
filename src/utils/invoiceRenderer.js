@@ -193,6 +193,7 @@ export function buildOrderInvoiceData(order, { docType = "invoice" } = {}) {
   const surchargeTotal =
     num(order.totalSurcharges) || surcharges.reduce((a, s) => a + num(s.amount), 0);
   const overage = num(order.overageAmount);
+  const additionalTonnage = num(order.additionalTonnagePrice);
   const extra = num(order.extra);
 
   // Add-ons charged at checkout (same figures the admin Payments ledger uses).
@@ -201,7 +202,7 @@ export function buildOrderInvoiceData(order, { docType = "invoice" } = {}) {
     order.cancelation ? { description: "Cancellation protection", amount: 39 } : null,
   ].filter(Boolean);
   const addonTotal = addons.reduce((a, x) => a + x.amount, 0);
-  const components = surchargeTotal + overage + extra + addonTotal;
+  const components = surchargeTotal + overage + additionalTonnage + extra + addonTotal;
 
   // `price` is what the customer was charged (the ledger's "Customer Paid").
   const price = num(order.price);
@@ -220,6 +221,16 @@ export function buildOrderInvoiceData(order, { docType = "invoice" } = {}) {
       amount: money(base),
     },
   ];
+  if (additionalTonnage > 0) {
+    const addedTons = num(order.additionalTons);
+    const ratePerTon = num(order.overagePerTon) || (addedTons > 0 ? additionalTonnage / (addedTons * qty) : additionalTonnage);
+    items.push({
+      description: `Additional tonnage${addedTons ? ` (+${addedTons} t${qty > 1 ? `/bin × ${qty}` : ""})` : ""}`,
+      quantity: addedTons ? String(addedTons * qty) : "1",
+      unitPrice: money(ratePerTon),
+      amount: money(additionalTonnage),
+    });
+  }
   if (extra > 0) items.push({ description: "Extra days", quantity: "1", unitPrice: money(extra), amount: money(extra) });
   if (overage > 0) {
     const tons = num(order.overageTons);

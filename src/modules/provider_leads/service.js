@@ -17,6 +17,7 @@ import logger from "../../config/logger.js";
 import { sendSMS } from "../../utils/sendSMS.js";
 import config from "../../config/env.js";
 import { generateOTP } from "../../utils/Generator.js";
+import { getOperatorJunkEligibility } from "../../utils/junkEligibility.js";
 
 class ProviderLeadsService {
   /**
@@ -75,21 +76,11 @@ class ProviderLeadsService {
         }
       }
     } else if (serviceType === "Junk Removal") {
-      const junkProfile = await JunkRemoval.findOne({ userId: provider._id }).lean();
-      const hasInsurance = Boolean(
-        provider.isInsured ||
-        provider.insuranceFile ||
-        (junkProfile && (junkProfile.COI || junkProfile.isCOIAApproved))
-      );
-      const isApprovedJunk = Boolean(
-        provider.role === "renter" ||
-        provider.type === "renter" ||
-        (junkProfile && junkProfile.status !== "rejected" && hasInsurance) ||
-        (provider.junkRemoval && hasInsurance) ||
-        (provider.access_types === "junkRemoval" && hasInsurance)
-      );
-      if (!isApprovedJunk) {
-        throw new BadRequestError("This provider is not currently qualified or insured for Junk Removal.");
+      const junkEligibility = await getOperatorJunkEligibility(provider);
+      if (!junkEligibility.eligible) {
+        throw new BadRequestError(
+          "This provider requires active verified bins and an uploaded insurance file (or an approved Junk Removal application) for Junk Removal."
+        );
       }
     } else if (serviceType === "Tree Removal") {
       const treeProfile = await TreeRemoval.findOne({ userId: provider._id }).lean();
@@ -944,6 +935,91 @@ class ProviderLeadsService {
     const provider = await User.findById(providerId);
     if (!provider) {
       throw new NotFoundError("Provider account not found.");
+    }
+
+    if (!provider.accountId_verified) {
+      throw new BadRequestError(
+        "Connect your Stripe payout account first before creating leads."
+      );
+    }
+
+    const requestedService = serviceType || "Dumbster";
+    if (requestedService === "Dumbster" || requestedService === "Porta Potty") {
+      const unitFilter =
+        requestedService === "Porta Potty"
+          ? { user: provider._id, portaPotty: { $ne: null } }
+          : { user: provider._id, dumbster: { $ne: null } };
+      const allServiceUnits = await Dustbin.find(unitFilter)
+        .select("verify rejected status")
+        .lean();
+      const activeServiceUnits = allServiceUnits.filter(
+        (b) =>
+          b.verify === true &&
+          !b.rejected &&
+          !["deactive", "inactive"].includes(String(b.status || "").toLowerCase())
+      );
+      if (activeServiceUnits.length === 0) {
+        const unitLabel = requestedService === "Porta Potty" ? "Porta Potty unit" : "dumpster bin";
+        if (allServiceUnits.length === 0) {
+          throw new BadRequestError(
+            `Create a ${unitLabel} in Equipment first before creating ${
+              requestedService === "Porta Potty" ? "Porta Potty" : "Dumpster Rental"
+            } leads.`
+          );
+        }
+        const hasPending = allServiceUnits.some((b) => !b.verify && !b.rejected);
+        if (hasPending) {
+          throw new BadRequestError(
+            `Your ${unitLabel} is currently waiting for admin approval. Please wait or contact admin.`
+          );
+        }
+        throw new BadRequestError(
+          `You have no active approved ${unitLabel}s. Update your listing in Equipment or contact admin.`
+        );
+      }
+    } else if (requestedService === "Tree Removal") {
+      const treeProfile = await TreeRemoval.findOne({ userId: provider._id }).lean();
+      const rawSt = String(treeProfile?.status || "").toLowerCase().trim();
+      const isApproved =
+        treeProfile?.approved === true ||
+        ["approved", "active", "verified"].includes(rawSt);
+      if (!isApproved) {
+        if (!treeProfile || (!rawSt && !treeProfile.Tree_removal_license && !treeProfile.COI)) {
+          throw new BadRequestError(
+            "You are not licensed for Tree Services yet. Apply and upload your Tree Services license first."
+          );
+        }
+        if (rawSt === "rejected") {
+          throw new BadRequestError(
+            "Your Tree Services application was rejected. Re-apply or contact admin."
+          );
+        }
+        throw new BadRequestError(
+          "Your Tree Services application is currently waiting for admin approval. Please wait or contact admin."
+        );
+      }
+    } else if (requestedService === "Junk Removal") {
+      const junkEligibility = await getOperatorJunkEligibility(provider);
+      if (!junkEligibility.eligible) {
+        if (junkEligibility.reason === "rejected") {
+          throw new BadRequestError(
+            "Your Junk Removal application was rejected. Re-apply or contact admin."
+          );
+        }
+        if (junkEligibility.reason === "pending") {
+          throw new BadRequestError(
+            "Your Junk Removal application is currently waiting for admin approval. Please wait or contact admin."
+          );
+        }
+        if (!junkEligibility.hasInsuranceFile) {
+          throw new BadRequestError(
+            "Upload your Certificate of Insurance (COI) with active verified bins (or apply for Junk Removal) first."
+          );
+        }
+        throw new BadRequestError(
+          "Active verified bins and an insurance file (or an approved Junk Removal application) are required for Junk Removal."
+        );
+      }
     }
 
     let customerUser = null;

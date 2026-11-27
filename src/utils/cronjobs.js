@@ -4,6 +4,7 @@ import User from "../models/User.js";
 import TransactionModel from "../models/Transaction.js";
 import logger from "../config/logger.js";
 import { scheduleRentalExpiryReminders } from "./rentalExpiryReminderJob.js";
+import { scheduleBuilderReminders } from "./builderReminderJob.js";
 import { sendNotification } from "./notifications.js";
 import { orderMessages } from "./orderMessages.js";
 import { buttonTemplate } from "./emailTemplate.js";
@@ -287,6 +288,7 @@ export const cronjobs = () => {
   });
 
   scheduleRentalExpiryReminders();
+  scheduleBuilderReminders();
 
   // Commercial automatic empty & redeliver (hourly)
   cron.schedule("20 * * * *", async () => {

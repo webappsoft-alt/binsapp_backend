@@ -11,6 +11,7 @@ import { sendDispatchAlertToCustomer } from "../../utils/dispatchAlertService.js
 import { io, connectedUsers } from "../../socket/socket.js";
 import { refundPayment } from "../../utils/StripePayment.js";
 import { getAddonFees, computeSplit } from "../../utils/paymentHold.js";
+import { triggerScheduledContractInvoice } from "../../utils/builderOfferBilling.js";
 import OrderTimeline from "../../models/OrderTimeline.js";
 import { RENTER_STATUS_GROUPS } from "./renterStatusGroups.js";
 import {
@@ -45,6 +46,7 @@ import { AssignOrder, SubUserDetail } from "../../models/AssignOrder.js";
 import Conversation from "../../models/Conversation.js";
 import Message from "../../models/Message.js";
 import ProviderLead from "../../models/ProviderLead.js";
+import ProviderCustomer from "../../models/ProviderCustomer.js";
 import { sendSMS } from "../../utils/sendSMS.js";
 import { normalizePhone, phoneLookupVariants } from "../../utils/phone.js";
 import { sendAdminEmailToUser } from "../../utils/emailservice.js";
@@ -71,11 +73,11 @@ class OrderService {
       },
       {
         path: "dumbster",
-        select: "name size price tons weight image",
+        select: "name size price tons overagePerTon weight image",
       },
       {
         path: "dustbin",
-        select: "name size price tons weight image",
+        select: "name size price tons overagePerTon weight image",
       },
       {
         path: "portaPotty",
@@ -182,11 +184,11 @@ class OrderService {
       },
       {
         path: "dumbster",
-        select: "name size price tons weight image",
+        select: "name size price tons overagePerTon weight image",
       },
       {
         path: "dustbin",
-        select: "name size price tons weight image",
+        select: "name size price tons overagePerTon weight image",
       },
       {
         path: "portaPotty",
@@ -361,6 +363,51 @@ class OrderService {
   }
   async completeOrder(applicationId, userId, status) {
     try {
+      const existingOrder = await Order.findOne({
+        _id: applicationId,
+        status: "accepted",
+        to_id: userId,
+      });
+      if (!existingOrder) {
+        throw new NotFoundError("Order not found");
+      }
+      if (existingOrder.builderOffer) {
+        const loadNum =
+          Number(
+            existingOrder.loadSequenceNumber ||
+              existingOrder.metadata?.loadSequenceNumber,
+          ) || 1;
+        if (existingOrder.awaitingPickupPayment) {
+          const pickupRes = await triggerScheduledContractInvoice({
+            offerId: existingOrder.builderOffer,
+            triggerType: "pickup",
+            loadNumber: loadNum,
+            orderId: existingOrder._id,
+          });
+          if (!pickupRes.success) {
+            const err = new BadRequestError(
+              pickupRes.message ||
+                "Final pickup installment payment is required before completing this order.",
+            );
+            err.requiresPaymentModal = true;
+            err.pendingInvoice = pickupRes.invoice || null;
+            throw err;
+          }
+          existingOrder.awaitingPickupPayment = false;
+          existingOrder.pickupPaymentSettledAt = new Date();
+          await existingOrder.save();
+        }
+        await triggerScheduledContractInvoice({
+          offerId: existingOrder.builderOffer,
+          triggerType: "load",
+          loadNumber: loadNum,
+          orderId: existingOrder._id,
+        }).catch(() => {});
+        const BuilderOfferModel = (await import("../../models/BuilderOffer.js")).default;
+        await BuilderOfferModel.findByIdAndUpdate(existingOrder.builderOffer, {
+          $max: { loadsCompleted: loadNum },
+        }).catch(() => {});
+      }
       const updatedSession = await Order.findOneAndUpdate(
         { _id: applicationId, status: "accepted", to_id: userId },
         {
@@ -456,11 +503,11 @@ class OrderService {
         },
         {
           path: "dumbster",
-          select: "name size price tons weight image",
+          select: "name size price tons overagePerTon weight image",
         },
         {
           path: "dustbin",
-          select: "name size price tons weight image",
+          select: "name size price tons overagePerTon weight image",
         },
         "rentee_rating",
         "renter_rating",
@@ -790,7 +837,7 @@ class OrderService {
         .populate("dustbin")
         .lean();
       if (!findOrder) {
-        throw new NotFoundError("Order not found");
+        return null;
       }
       await Order.findByIdAndUpdate(
         findOrder._id,
@@ -816,7 +863,7 @@ class OrderService {
         .populate("portaPotty")
         .lean();
       if (!findOrder) {
-        throw new NotFoundError("Order not found");
+        return null;
       }
       await Order.findByIdAndUpdate(
         findOrder._id,
@@ -1435,6 +1482,11 @@ class OrderService {
           "junkRemoval",
           "company",
           {
+            path: "builderOffer",
+            select:
+              "title exchangeMode exchangeEveryDays estimatedLoads loadsCompleted rotationsPaused maxOnsiteAtOnce billingMode",
+          },
+          {
             path: "assignOrder",
             populate: {
               path: "subUserDetail",
@@ -1564,10 +1616,106 @@ class OrderService {
             category: order.category,
             subCategory: order.subCategory,
           },
+          builderOffer: order.builderOffer
+            ? {
+                id: order.builderOffer._id,
+                title: order.builderOffer.title,
+                exchangeMode: order.builderOffer.exchangeMode,
+                exchangeEveryDays: order.builderOffer.exchangeEveryDays,
+                estimatedLoads: order.builderOffer.estimatedLoads,
+                loadsCompleted: order.builderOffer.loadsCompleted,
+                rotationsPaused: Boolean(order.builderOffer.rotationsPaused),
+                maxOnsiteAtOnce: order.builderOffer.maxOnsiteAtOnce,
+                billingMode: order.builderOffer.billingMode,
+              }
+            : null,
+          loadSequenceNumber: order.loadSequenceNumber || 1,
           createdAt: order.createdAt,
           rawOrder: order,
         };
       });
+
+      // Project future automatic recurring rotations onto provider calendar
+      // strictly capped at contract estimatedLoads and suspended if rotationsPaused.
+      const DAY_MS = 24 * 60 * 60 * 1000;
+      const rangeStart = startDate ? new Date(startDate) : new Date(now.getFullYear(), now.getMonth(), 1);
+      const rangeEnd = endDate ? new Date(endDate) : new Date(rangeStart.getTime() + 60 * DAY_MS);
+      rangeEnd.setHours(23, 59, 59, 999);
+
+      const latestByContractKey = new Map();
+      for (const order of pricedOrders) {
+        const bo = order.builderOffer;
+        if (
+          !bo ||
+          bo.exchangeMode !== "automatic" ||
+          bo.rotationsPaused ||
+          Number(bo.exchangeEveryDays) < 1 ||
+          String(order.status || "").toLowerCase() !== "accepted"
+        ) {
+          continue;
+        }
+        const contractKey = `${String(bo._id)}:${String(order.jobSite?._id || order.jobSite || "site")}:${String(order.commercialSize || order.dumbster?.size || "")}`;
+        const seq = Math.max(1, Number(order.loadSequenceNumber) || 1);
+        const prev = latestByContractKey.get(contractKey);
+        if (!prev || seq > prev.seq) {
+          latestByContractKey.set(contractKey, { order, seq, bo });
+        }
+      }
+
+      const projectedRotationEvents = [];
+      for (const { order, seq, bo } of latestByContractKey.values()) {
+        const capLoads = Math.max(1, Number(bo.estimatedLoads) || 1);
+        if (seq >= capLoads) continue;
+        const cadenceDays = Math.max(1, Number(bo.exchangeEveryDays) || 3);
+        const anchorStart = new Date(order.start_date || order.createdAt || now);
+        for (let k = seq + 1; k <= capLoads; k++) {
+          const offsetDays = (k - seq) * cadenceDays;
+          const rotDate = new Date(anchorStart.getTime() + offsetDays * DAY_MS);
+          if (rotDate < rangeStart || rotDate > rangeEnd) continue;
+          const rotIso = rotDate.toISOString();
+          const sizeTxt = order.dumbster?.size || order.commercialSize;
+          const assetTitle = sizeTxt ? `${sizeTxt} Yard Dumpster` : "Recurring Swap";
+          projectedRotationEvents.push({
+            id: `projected-${String(order._id)}-load-${k}`,
+            orderId: order._id,
+            title: `Auto-Swap #${k}/${capLoads} — ${assetTitle} (${order.user?.name || "Commercial"})`,
+            assetTitle: `Projected Swap #${k} of ${capLoads}`,
+            service_type: order.service_type === "Dumbster" ? "Dumpster" : order.service_type || "Dumpster",
+            status: "scheduled_rotation",
+            isProjectedRotation: true,
+            loadSequenceNumber: k,
+            estimatedLoads: capLoads,
+            startDate: rotIso,
+            endDate: rotIso,
+            validDate: rotIso,
+            numDays: cadenceDays,
+            isMultiDay: false,
+            isOverdue: false,
+            daysRemaining: Math.ceil((rotDate - now) / DAY_MS),
+            readyToPickup: false,
+            amount: 0,
+            price: 0,
+            address: order.address || "",
+            location: order.location,
+            customer: {
+              id: order.user?._id,
+              name: order.user?.name || "Customer",
+              phone: order.user?.phone || "",
+              email: order.user?.email || "",
+              avatar: order.user?.avatar || "",
+            },
+            driver: null,
+            builderOffer: {
+              id: bo._id,
+              title: bo.title,
+              exchangeEveryDays: cadenceDays,
+              estimatedLoads: capLoads,
+            },
+          });
+        }
+      }
+
+      const allEvents = [...calendarEvents, ...projectedRotationEvents];
 
       const totalOrders = calendarEvents.length;
       const activeRentals = calendarEvents.filter(
@@ -1595,7 +1743,7 @@ class OrderService {
       );
 
       return {
-        events: calendarEvents,
+        events: allEvents,
         summary: {
           totalOrders,
           activeRentals,
@@ -1604,6 +1752,7 @@ class OrderService {
           dropoffsToday,
           pickupsToday,
           totalRevenue,
+          projectedRotations: projectedRotationEvents.length,
         },
       };
     } catch (error) {
@@ -2583,7 +2732,7 @@ class OrderService {
 
       // Single-pass aggregation of all unique customers served by this provider
       const customersRaw = await Order.aggregate([
-        { $match: { to_id: providerObjectId, user: { $ne: null } } },
+        { $match: { to_id: providerObjectId, user: { $nin: [null, providerObjectId] } } },
         { $sort: { createdAt: -1 } },
         {
           $group: {
@@ -2703,6 +2852,64 @@ class OrderService {
         },
       ]);
 
+      // Merge CRM-added customers (from + Add Customer / Add Customer modal / Leads) who may have 0 orders yet
+      const existingOrderCustomerIds = new Set(customersRaw.map((c) => String(c._id)));
+      const [crmLinks, leadLinks] = await Promise.all([
+        ProviderCustomer.find({
+          provider: providerObjectId,
+          customer: { $ne: providerObjectId },
+        })
+          .populate(
+            "customer",
+            "name comp_name email phone company access_types status profilePicture photoUrl image avatar address city state zip createdAt"
+          )
+          .lean(),
+        ProviderLead.find({
+          provider: providerObjectId,
+          customer: { $nin: [null, providerObjectId] },
+        })
+          .populate(
+            "customer",
+            "name comp_name email phone company access_types status profilePicture photoUrl image avatar address city state zip createdAt"
+          )
+          .select("customer createdAt")
+          .lean(),
+      ]);
+
+      const addedCrmIds = new Set();
+      const appendCrmUser = (cust, refDate) => {
+        if (!cust || !cust._id) return;
+        const cid = String(cust._id);
+        if (existingOrderCustomerIds.has(cid) || addedCrmIds.has(cid)) return;
+        addedCrmIds.add(cid);
+        const profilePic =
+          cust.profilePicture || cust.photoUrl || cust.image || cust.avatar || "";
+        customersRaw.push({
+          _id: cust._id,
+          orderCount: 0,
+          completedCount: 0,
+          activeCount: 0,
+          totalSpend: 0,
+          lastOrderAt: refDate || cust.createdAt || new Date(),
+          firstOrderAt: refDate || cust.createdAt || new Date(),
+          lastServiceType: "",
+          isCrmAddedOnly: true,
+          addresses: cust.address ? [cust.address] : [],
+          recentOrders: [],
+          name: cust.name || cust.comp_name || "Customer Account",
+          compName: cust.comp_name || "",
+          hasCompany: Boolean(cust.company),
+          accessType: cust.access_types || "",
+          accountStatus: cust.status || "",
+          email: cust.email || "",
+          phone: cust.phone || "",
+          profilePic,
+        });
+      };
+
+      crmLinks.forEach((link) => appendCrmUser(link.customer, link.createdAt));
+      leadLinks.forEach((lead) => appendCrmUser(lead.customer, lead.createdAt));
+
       // Calculate days ago, retention status, and contextual pitch for each client
       let allEnriched = customersRaw.map((c) => {
         const lastDate = c.lastOrderAt ? new Date(c.lastOrderAt) : new Date();
@@ -2710,11 +2917,11 @@ class OrderService {
           0,
           Math.floor((now - lastDate.getTime()) / (1000 * 60 * 60 * 24))
         );
-        const service = c.lastServiceType || "Dumpster";
-        const svcLower = service.toLowerCase();
+        const service = c.isCrmAddedOnly ? "" : c.lastServiceType || "Dumpster";
+        const svcLower = (service || "dumpster").toLowerCase();
 
         let statusKey = "regular";
-        let statusBadge = "Active Account";
+        let statusBadge = c.isCrmAddedOnly ? "Added Customer" : "Active Account";
         const followupDue = daysAgo >= 30;
 
         if (daysAgo >= 60) {
@@ -2726,6 +2933,9 @@ class OrderService {
         } else if (c.orderCount > 1 || c.totalSpend >= 500) {
           statusKey = "vip";
           statusBadge = "VIP Repeat Client";
+        } else if (c.isCrmAddedOnly) {
+          statusKey = "new_recent";
+          statusBadge = "Added Customer";
         } else if (daysAgo <= 7) {
           statusKey = "new_recent";
           statusBadge = "Recent Active";
@@ -2868,18 +3078,24 @@ class OrderService {
 
   async getRenterCustomerDetail({ userId, customerId }) {
     try {
+      if (!customerId || !mongoose.Types.ObjectId.isValid(customerId)) {
+        throw new BadRequestError("Valid customer ID is required");
+      }
       const providerObjectId = new mongoose.Types.ObjectId(userId);
       const customerObjectId = new mongoose.Types.ObjectId(customerId);
+      if (customerObjectId.equals(providerObjectId)) {
+        throw new NotFoundError("Your own operator account cannot be viewed as a customer profile.");
+      }
       const now = Date.now();
 
       // Fetch customer user record
       const customerUser = await User.findById(customerObjectId)
         .select(
-          "name comp_name email phone profilePicture photoUrl image avatar createdAt location city state country address"
+          "name comp_name email phone role status profilePicture photoUrl image avatar createdAt location city state country address company access_types"
         )
         .lean();
 
-      if (!customerUser) {
+      if (!customerUser || customerUser.status === "deleted") {
         throw new NotFoundError("Customer account not found");
       }
 
@@ -2999,9 +3215,28 @@ class OrderService {
         ],
       };
 
-      const rawLeads = await ProviderLead.find(leadQuery)
-        .sort({ createdAt: -1 })
-        .lean();
+      const [rawLeads, providerCustomerDoc] = await Promise.all([
+        ProviderLead.find(leadQuery)
+          .sort({ createdAt: -1 })
+          .lean(),
+        ProviderCustomer.findOne({
+          provider: providerObjectId,
+          customer: customerObjectId,
+        }).lean(),
+      ]);
+
+      if (
+        ["renter", "admin"].includes(String(customerUser.role || "").toLowerCase()) &&
+        orders.length === 0 &&
+        rawLeads.length === 0 &&
+        !providerCustomerDoc
+      ) {
+        throw new NotFoundError("Operator and staff accounts are not customer profiles.");
+      }
+
+      const isInDirectory = Boolean(
+        providerCustomerDoc || orders.length > 0 || rawLeads.length > 0
+      );
 
       // Separate into direct leads and sent/accepted estimates
       const leads = [];
@@ -3099,6 +3334,7 @@ class OrderService {
           statusBadge,
           daysAgo,
           isCommercial: Boolean(customerUser.company) || customerUser.access_types === "company",
+          inDirectory: isInDirectory,
         },
         stats: {
           totalSpend: Math.round(totalSpend),
@@ -3113,6 +3349,7 @@ class OrderService {
           estimatesCount: estimates.length,
           leadsCount: leads.length,
           invoicesCount: invoices.length,
+          isInDirectory,
         },
         orders: enrichedOrders,
         estimates,
@@ -3127,7 +3364,7 @@ class OrderService {
     }
   }
 
-  static async markOrderReadyToPickup({
+  async markOrderReadyToPickup({
     orderId,
     userId,
     user,
@@ -3277,6 +3514,18 @@ class OrderService {
       throw new NotFoundError("Customer account not found.");
     }
 
+    await ProviderCustomer.findOneAndUpdate(
+      { provider: providerObjectId, customer: customerObjectId },
+      {
+        $setOnInsert: {
+          provider: providerObjectId,
+          customer: customerObjectId,
+          source: "followup",
+        },
+      },
+      { upsert: true }
+    );
+
     const providerName =
       provider?.comp_name?.trim() || provider?.name?.trim() || "BINS Hauler";
     const customerName =
@@ -3423,7 +3672,7 @@ class OrderService {
     };
   }
 
-  async checkCustomerExists({ phone, email }) {
+  async checkCustomerExists({ phone, email, providerId = null }) {
     try {
       const cleanEmail = String(email || "").trim().toLowerCase();
       const rawPhone = String(phone || "").trim();
@@ -3434,8 +3683,11 @@ class OrderService {
       let matchField = null;
 
       if (variants.length > 0) {
-        matchedUser = await User.findOne({ phone: { $in: variants } })
-          .select("name email phone comp_name address city state zip role createdAt")
+        matchedUser = await User.findOne({
+          phone: { $in: variants },
+          status: { $ne: "deleted" },
+        })
+          .select("name email phone comp_name address city state zip role status createdAt")
           .lean();
         if (matchedUser) {
           matchField = "phone";
@@ -3443,8 +3695,11 @@ class OrderService {
       }
 
       if (!matchedUser && cleanEmail) {
-        matchedUser = await User.findOne({ email: cleanEmail })
-          .select("name email phone comp_name address city state zip role createdAt")
+        matchedUser = await User.findOne({
+          email: cleanEmail,
+          status: { $ne: "deleted" },
+        })
+          .select("name email phone comp_name address city state zip role status createdAt")
           .lean();
         if (matchedUser) {
           matchField = "email";
@@ -3452,8 +3707,57 @@ class OrderService {
       }
 
       if (matchedUser) {
+        const isSelf = Boolean(providerId && String(matchedUser._id) === String(providerId));
+        if (isSelf) {
+          return {
+            exists: true,
+            isSelf: true,
+            isNonCustomer: true,
+            reason: "self_account",
+            matchField,
+            customer: null,
+          };
+        }
+
+        const matchedRole = String(matchedUser.role || "").toLowerCase();
+        if (matchedRole === "renter" || matchedRole === "admin") {
+          let hasRelationship = false;
+          if (providerId) {
+            const [hasOrder, hasLead] = await Promise.all([
+              Order.exists({ to_id: providerId, user: matchedUser._id }),
+              ProviderLead.exists({ provider: providerId, customer: matchedUser._id }),
+            ]);
+            hasRelationship = Boolean(hasOrder || hasLead);
+          }
+
+          if (!hasRelationship) {
+            return {
+              exists: true,
+              isSelf: false,
+              isNonCustomer: true,
+              reason: "non_customer_account",
+              role: matchedRole,
+              matchField,
+              customer: null,
+            };
+          }
+        }
+
+        let inDirectory = false;
+        if (providerId) {
+          const [hasOrder, hasLead, hasCrm] = await Promise.all([
+            Order.exists({ to_id: providerId, user: matchedUser._id }),
+            ProviderLead.exists({ provider: providerId, customer: matchedUser._id }),
+            ProviderCustomer.exists({ provider: providerId, customer: matchedUser._id }),
+          ]);
+          inDirectory = Boolean(hasOrder || hasLead || hasCrm);
+        }
+
         return {
           exists: true,
+          isSelf: false,
+          isNonCustomer: false,
+          inDirectory,
           matchField,
           customer: {
             id: matchedUser._id,
@@ -3464,12 +3768,15 @@ class OrderService {
             address: matchedUser.address || "",
             role: matchedUser.role || "rentee",
             memberSince: matchedUser.createdAt,
+            inDirectory,
           },
         };
       }
 
       return {
         exists: false,
+        isSelf: false,
+        isNonCustomer: false,
         matchField: null,
         customer: null,
       };
@@ -3507,8 +3814,21 @@ class OrderService {
       const variants = phoneLookupVariants(normalizedPhone);
 
       // Check if phone already registered
-      const phoneMatch = await User.findOne({ phone: { $in: variants } });
+      const phoneMatch = await User.findOne({
+        phone: { $in: variants },
+        status: { $ne: "deleted" },
+      });
       if (phoneMatch) {
+        if (providerId && String(phoneMatch._id) === String(providerId)) {
+          throw new BadRequestError(
+            "This phone number belongs to your own operator account. Enter your customer's phone number instead."
+          );
+        }
+        if (["renter", "admin"].includes(String(phoneMatch.role || "").toLowerCase())) {
+          throw new BadRequestError(
+            `Phone number ${normalizedPhone} is already registered to a service provider or staff account.`
+          );
+        }
         throw new BadRequestError(
           `An account with phone number ${normalizedPhone} already exists (${phoneMatch.name || "Customer"}).`
         );
@@ -3516,8 +3836,21 @@ class OrderService {
 
       const cleanEmail = String(email || "").trim().toLowerCase();
       if (cleanEmail) {
-        const emailMatch = await User.findOne({ email: cleanEmail });
+        const emailMatch = await User.findOne({
+          email: cleanEmail,
+          status: { $ne: "deleted" },
+        });
         if (emailMatch) {
+          if (providerId && String(emailMatch._id) === String(providerId)) {
+            throw new BadRequestError(
+              "This email address belongs to your own operator account. Enter your customer's email address instead."
+            );
+          }
+          if (["renter", "admin"].includes(String(emailMatch.role || "").toLowerCase())) {
+            throw new BadRequestError(
+              `Email address ${cleanEmail} is already registered to a service provider or staff account.`
+            );
+          }
           throw new BadRequestError(
             `An account with email ${cleanEmail} already exists (${emailMatch.name || "Customer"}).`
           );
@@ -3543,6 +3876,19 @@ class OrderService {
       });
 
       await newUser.save();
+
+      await ProviderCustomer.findOneAndUpdate(
+        { provider: providerId, customer: newUser._id },
+        {
+          $setOnInsert: {
+            provider: providerId,
+            customer: newUser._id,
+            source: "created",
+            notes: String(notes || "").trim(),
+          },
+        },
+        { upsert: true }
+      );
 
       // Notifications
       if (sendNotification) {
@@ -3608,9 +3954,71 @@ class OrderService {
         role: newUser.role,
         status: newUser.status,
         memberSince: newUser.createdAt,
+        inDirectory: true,
       };
     } catch (error) {
       logger.error("createRenterCustomer error", error);
+      throw error;
+    }
+  }
+
+  async addRenterCustomer({ providerId, customerId, source = "manual", notes = "" }) {
+    try {
+      if (!customerId || !mongoose.Types.ObjectId.isValid(customerId)) {
+        throw new BadRequestError("Valid customer ID is required.");
+      }
+
+      const providerObjectId = new mongoose.Types.ObjectId(providerId);
+      const customerObjectId = new mongoose.Types.ObjectId(customerId);
+      if (customerObjectId.equals(providerObjectId)) {
+        throw new BadRequestError("You cannot add your own operator account as a customer.");
+      }
+
+      const customerUser = await User.findById(customerObjectId)
+        .select("name comp_name email phone role status profilePicture photoUrl image avatar address createdAt")
+        .lean();
+
+      if (!customerUser || customerUser.status === "deleted") {
+        throw new NotFoundError("Customer account not found.");
+      }
+
+      if (["renter", "admin"].includes(String(customerUser.role || "").toLowerCase())) {
+        const [hasOrder, hasLead] = await Promise.all([
+          Order.exists({ to_id: providerObjectId, user: customerObjectId }),
+          ProviderLead.exists({ provider: providerObjectId, customer: customerObjectId }),
+        ]);
+        if (!hasOrder && !hasLead) {
+          throw new BadRequestError("Operator and staff accounts cannot be added as customers.");
+        }
+      }
+
+      const allowedSources = ["created", "followup", "lead", "order", "manual"];
+      const safeSource = allowedSources.includes(source) ? source : "manual";
+
+      await ProviderCustomer.findOneAndUpdate(
+        { provider: providerObjectId, customer: customerObjectId },
+        {
+          $setOnInsert: {
+            provider: providerObjectId,
+            customer: customerObjectId,
+            source: safeSource,
+            notes: String(notes || "").trim(),
+          },
+        },
+        { upsert: true, new: true }
+      );
+
+      return {
+        id: customerUser._id,
+        name: customerUser.name || customerUser.comp_name || "Customer Account",
+        email: customerUser.email || "",
+        phone: customerUser.phone || "",
+        comp_name: customerUser.comp_name || "",
+        address: customerUser.address || "",
+        inDirectory: true,
+      };
+    } catch (error) {
+      logger.error("addRenterCustomer error", error);
       throw error;
     }
   }

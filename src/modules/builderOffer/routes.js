@@ -9,6 +9,7 @@ import {
 } from "./validation.js";
 import {
   acceptPortion,
+  adjustInvoice,
   adjustOffer,
   adminGetOffer,
   adminInvite,
@@ -16,12 +17,16 @@ import {
   adminPatchOffer,
   allowCounters,
   cancelOffer,
+  collectPickupPayment,
   createOffer,
+  createSetupIntent,
   declinePortion,
   getOffer,
+  getPaymentSetup,
   getRecommendation,
   listOffers,
   listPortions,
+  payOrRetryInvoice,
   quickOrder,
   respondCounter,
   saveBlanket,
@@ -43,10 +48,16 @@ router.post(
 );
 router.post("/:id/decline", declinePortion);
 router.post("/:id/counter", validate(counterValidation), submitCounter);
+router.post(
+  "/orders/:orderId/collect-pickup-payment",
+  collectPickupPayment,
+);
 
 // Company routes are also mounted under /company/builder-offers
 export const companyBuilderOfferRouter = express.Router();
 companyBuilderOfferRouter.use(authenticate);
+companyBuilderOfferRouter.get("/payment-setup", getPaymentSetup);
+companyBuilderOfferRouter.post("/setup-intent", createSetupIntent);
 companyBuilderOfferRouter.post(
   "/",
   validate(createOfferValidation),
@@ -70,6 +81,18 @@ companyBuilderOfferRouter.get("/:id/recommendation", getRecommendation);
 companyBuilderOfferRouter.post(
   "/:id/counters/:counterId/respond",
   respondCounter,
+);
+companyBuilderOfferRouter.post(
+  "/:id/invoices/:billingId/pay",
+  payOrRetryInvoice,
+);
+companyBuilderOfferRouter.post(
+  "/:id/invoices/:billingId/retry",
+  payOrRetryInvoice,
+);
+companyBuilderOfferRouter.post(
+  "/:id/invoices/:billingId/adjust",
+  adjustInvoice,
 );
 
 export const adminBuilderOfferRouter = express.Router();

@@ -36,6 +36,7 @@ import {
   captureHold,
   releaseHold,
   computeSplit,
+  getAddonFees,
   stripeClient,
 } from "../utils/paymentHold.js";
 import {
@@ -61,11 +62,19 @@ import {
   resolveCompanyTopTier,
 } from "../utils/dustbinMatching.js";
 import { findNearbyJunkOperators } from "../utils/junkOperatorMatching.js";
+import { getOperatorJunkEligibility } from "../utils/junkEligibility.js";
 import Company from "../models/Company.js";
+import BuilderOffer from "../models/BuilderOffer.js";
+import { triggerScheduledContractInvoice } from "../utils/builderOfferBilling.js";
 import {
   quoteCommercialDumpster,
   normalizeCommercialSize,
 } from "../utils/commercialPricing.js";
+import {
+  DEFAULT_OVERAGE_PER_TON,
+  defaultIncludedTonsForSize,
+  normalizeAdditionalTons,
+} from "../utils/dumpsterZonePricing.js";
 import { createOrAppendInvoiceLine } from "../utils/commercialBilling.js";
 import {
   applyGrowthPenalty,
@@ -1180,6 +1189,8 @@ export const initSocket = (server) => {
           insurance_protection,
           payment_type,
           size,
+          additionalTons = 0,
+          extraTons = 0,
           menual_review_id,
           manual_review_id,
         },
@@ -1188,6 +1199,10 @@ export const initSocket = (server) => {
         try {
           const senderId = socket.user._id.toString();
           service_type = normalizeServiceType(service_type);
+          const requestedAdditionalTons =
+            service_type === "Dumbster" || service_type === "dustbin"
+              ? normalizeAdditionalTons(additionalTons || extraTons)
+              : 0;
           const reviewId = menual_review_id || manual_review_id;
           if (!senderId) {
             callback({
@@ -1254,8 +1269,18 @@ export const initSocket = (server) => {
                   quantity,
                   dumbsterId,
                   location,
+                  additionalTons: requestedAdditionalTons,
                 });
-                authoritativePrice = Number(commercialQuote.price);
+                const explicitAddonFees = getAddonFees({
+                  driveaway:
+                    Boolean(driveaway) && Number(driveaway_insurance) > 0,
+                  cancelation:
+                    Boolean(cancelation) && Number(insurance_protection) > 0,
+                });
+                authoritativePrice =
+                  Math.round(
+                    (Number(commercialQuote.price) + explicitAddonFees) * 100,
+                  ) / 100;
               } catch (quoteErr) {
                 return callback({
                   success: false,
@@ -1521,6 +1546,10 @@ export const initSocket = (server) => {
           if (commercialQuote) {
             orderTonnageFields = {
               commercialSize: commercialQuote.size,
+              standardTons: commercialQuote.tonnage.standardTons,
+              additionalTons: commercialQuote.tonnage.additionalTons,
+              additionalTonnagePrice:
+                commercialQuote.tonnage.additionalTonnageTotal || 0,
               includedTons: commercialQuote.tonnage.includedTons,
               overagePerTon: commercialQuote.tonnage.overagePerTon,
               overageEnforced: commercialQuote.tonnage.overageEnforced,
@@ -1533,14 +1562,46 @@ export const initSocket = (server) => {
             if (dId && isValidObjectId(dId)) {
               catalogD = await Dumbster.findById(dId).lean();
             }
-            const incTons =
-              Number(catalogD?.tons) > 0 ? Number(catalogD.tons) : 2;
+            const stdTons =
+              Number(catalogD?.tons) > 0
+                ? Number(catalogD.tons)
+                : defaultIncludedTonsForSize(catalogD?.size) || 2;
             const ovrRate =
               Number(catalogD?.overagePerTon) > 0
                 ? Number(catalogD.overagePerTon)
-                : 85;
+                : DEFAULT_OVERAGE_PER_TON;
+            const qtyCount = Math.max(1, Number(quantity) || 1);
+            const addTonsCost =
+              Math.round(requestedAdditionalTons * ovrRate * qtyCount * 100) /
+              100;
+            const totalIncTons =
+              Math.round((stdTons + requestedAdditionalTons) * 100) / 100;
+            if (
+              requestedAdditionalTons > 0 &&
+              (!Number.isFinite(authoritativePrice) ||
+                authoritativePrice < addTonsCost)
+            ) {
+              return callback({
+                success: false,
+                title: "Validation Error",
+                message:
+                  "Order total must include the selected additional tonnage cost.",
+              });
+            }
+            if (requestedAdditionalTons > 0) {
+              orderMetadata.tonnageUpgrade = {
+                standardTons: stdTons,
+                additionalTons: requestedAdditionalTons,
+                additionalTonRate: ovrRate,
+                additionalTonnagePrice: addTonsCost,
+                totalIncludedTons: totalIncTons,
+              };
+            }
             orderTonnageFields = {
-              includedTons: incTons,
+              standardTons: stdTons,
+              additionalTons: requestedAdditionalTons,
+              additionalTonnagePrice: addTonsCost,
+              includedTons: totalIncTons,
               overagePerTon: ovrRate,
               overageEnforced: ovrRate > 0,
             };
@@ -2006,6 +2067,9 @@ export const initSocket = (server) => {
             payment_type: resolvedPaymentType,
             driveaway: resolvedDriveaway,
             cancelation: resolvedCancelation,
+            standardTons: priorOrder.standardTons ?? null,
+            additionalTons: priorOrder.additionalTons ?? 0,
+            additionalTonnagePrice: priorOrder.additionalTonnagePrice ?? 0,
             includedTons: priorOrder.includedTons ?? null,
             overagePerTon: priorOrder.overagePerTon ?? null,
             overageEnforced: priorOrder.overageEnforced ?? false,
@@ -2287,12 +2351,18 @@ export const initSocket = (server) => {
           // junk insurance, but final acceptance is blocked until those are set.
           const accepter = await User.findById(senderId)
             .select(
-              "accountId accountId_verified isInsured insuranceFile junkRemoval name role type",
+              "accountId accountId_verified isInsured insuranceFile verifyCount junkRemoval treeRemoval name role type",
             )
-            .populate({
-              path: "junkRemoval",
-              select: "COI status userId",
-            })
+            .populate([
+              {
+                path: "junkRemoval",
+                select: "COI status approved userId",
+              },
+              {
+                path: "treeRemoval",
+                select: "COI status",
+              },
+            ])
             .lean();
 
           const stripeReady = Boolean(
@@ -2473,74 +2543,84 @@ export const initSocket = (server) => {
               ? await JunkRemoval.findById(junkRemovalId).lean()
               : null;
 
-            // Every dumpster owner is automatically qualified for junk removal
-            // and site cleanup, so they never hit the insurance gate below.
-            const isDumpsterOwner =
-              accepter?.role === "renter" || accepter?.type === "renter";
-            const insured = Boolean(
-              isDumpsterOwner ||
-                accepter?.isInsured ||
-                accepter?.insuranceFile ||
-                findJunkRemoval?.COI,
+            if (
+              findJunkRemoval &&
+              findJunkRemoval.userId?.toString() !== senderId
+            ) {
+              return callback({
+                success: false,
+                title: "Request Update",
+                message: "Junk removal profile not found.",
+              });
+            }
+
+            const junkEligibility = await getOperatorJunkEligibility(
+              accepter,
+              {
+                junkProfile: findJunkRemoval,
+                treeProfile: accepter?.treeRemoval || null,
+              },
             );
 
-            // Insurance-only path: operator uploaded COI without full junk signup.
-            if (!findJunkRemoval) {
-              if (!insured) {
-                return callback({
-                  success: false,
-                  code: "INSURANCE_REQUIRED",
-                  title: "Insurance Required",
-                  message:
-                    "Upload your insurance document before accepting junk removal or site cleanup orders.",
-                });
-              }
-              bookingConflictMessage =
-                "You are already booked for the requested time period";
-            } else {
-              if (findJunkRemoval.userId.toString() !== senderId) {
-                return callback({
-                  success: false,
-                  title: "Request Update",
-                  message: "Junk removal profile not found.",
-                });
-              }
-              if (findJunkRemoval.status === "rejected" && !isDumpsterOwner) {
-                return callback({
-                  success: false,
-                  title: "Request Update",
-                  message:
-                    "Your junk removal application was rejected. Please re-upload documents to continue.",
-                });
-              }
+            if (junkEligibility.reason === "rejected") {
+              return callback({
+                success: false,
+                title: "Request Update",
+                message:
+                  "Your junk removal application was rejected. Please re-upload documents to continue.",
+              });
+            }
+            if (junkEligibility.reason === "pending") {
+              return callback({
+                success: false,
+                title: "Request Update",
+                message:
+                  "Your junk removal application is currently waiting for admin approval.",
+              });
+            }
+            if (!junkEligibility.hasInsuranceFile) {
+              return callback({
+                success: false,
+                code: "INSURANCE_REQUIRED",
+                title: "Insurance Required",
+                message:
+                  "Upload your insurance document before accepting junk removal or site cleanup orders.",
+              });
+            }
+            if (!junkEligibility.eligible) {
+              return callback({
+                success: false,
+                code: "ACTIVE_BIN_REQUIRED",
+                title: "Active Bins & Insurance Required",
+                message:
+                  "Active verified bins and an uploaded insurance file (or an approved junk removal application) are required before accepting junk removal or site cleanup orders.",
+              });
+            }
 
-              if (!insured) {
-                return callback({
-                  success: false,
-                  code: "INSURANCE_REQUIRED",
-                  title: "Insurance Required",
-                  message:
-                    "Upload your insurance document before accepting junk removal or site cleanup orders.",
-                });
-              }
-
-              // Keep user.isInsured in sync if COI exists but flag was never set.
-              if (!accepter?.isInsured && findJunkRemoval.COI) {
-                User.updateOne(
-                  { _id: senderId },
-                  {
-                    $set: {
-                      isInsured: true,
-                      insuranceFile: findJunkRemoval.COI,
-                    },
+            // Keep user.isInsured / insuranceFile synced when resolved from COI or bin.
+            if (
+              (!accepter?.isInsured || !accepter?.insuranceFile) &&
+              junkEligibility.insuranceFile
+            ) {
+              User.updateOne(
+                { _id: senderId },
+                {
+                  $set: {
+                    isInsured: true,
+                    ...(accepter?.insuranceFile
+                      ? {}
+                      : { insuranceFile: junkEligibility.insuranceFile }),
                   },
-                ).catch((err) =>
-                  logger.error("Failed to sync isInsured on accept", err),
-                );
-              }
+                },
+              ).catch((err) =>
+                logger.error("Failed to sync insuranceFile on accept", err),
+              );
+            }
 
-              bookingConflictMessage =
-                "You are already booked for the requested time period";
+            bookingConflictMessage =
+              "You are already booked for the requested time period";
+
+            if (findJunkRemoval) {
               if (findJunkRemoval.bookings) {
                 for (const booking of findJunkRemoval.bookings) {
                   if (
@@ -4449,10 +4529,67 @@ export const initSocket = (server) => {
           order: updatedSession,
         });
 
+        // Builder Offer multi-invoice guard & 1-load pickup payment collection:
+        // must happen BEFORE setting status='completed' or releasing dustbin hold.
+        if (updatedSession.builderOffer) {
+          const loadNum =
+            Number(
+              updatedSession.loadSequenceNumber ||
+                updatedSession.metadata?.loadSequenceNumber,
+            ) || 1;
+          if (updatedSession.awaitingPickupPayment) {
+            const pickupRes = await triggerScheduledContractInvoice({
+              offerId: updatedSession.builderOffer,
+              triggerType: "pickup",
+              loadNumber: loadNum,
+              orderId: updatedSession._id,
+            });
+            if (!pickupRes.success) {
+              const builderId = updatedSession.user?._id?.toString?.();
+              if (builderId) {
+                io.to(`user_${builderId}`).emit("pickup-payment-required", {
+                  orderId: updatedSession._id.toString(),
+                  orderNumber: updatedSession.orderNumber,
+                  offerId: updatedSession.builderOffer.toString(),
+                  amount: pickupRes.invoice?.amount,
+                  invoice: pickupRes.invoice,
+                  message: pickupRes.message,
+                });
+              }
+              callback({
+                success: false,
+                requiresPaymentModal: true,
+                orderId: updatedSession._id.toString(),
+                offerId: updatedSession.builderOffer.toString(),
+                pendingInvoice: pickupRes.invoice || null,
+                title: "Pickup Payment Required",
+                message:
+                  pickupRes.message ||
+                  "The final pickup installment from the builder is required before completing this job.",
+              });
+              return;
+            }
+            updatedSession.awaitingPickupPayment = false;
+            updatedSession.pickupPaymentSettledAt = new Date();
+          }
+
+          await triggerScheduledContractInvoice({
+            offerId: updatedSession.builderOffer,
+            triggerType: "load",
+            loadNumber: loadNum,
+            orderId: updatedSession._id,
+          }).catch(() => {});
+
+          await BuilderOffer.findByIdAndUpdate(updatedSession.builderOffer, {
+            $max: { loadsCompleted: loadNum },
+          }).catch(() => {});
+        }
+
         // "Settled" means the owner has already been paid (transfer done).
         // Capture now happens at accept-time, so paymentHoldStatus === "captured"
         // alone must NOT short-circuit the payout transfer here.
-        const alreadySettled = updatedSession.transfer === true;
+        const alreadySettled =
+          updatedSession.transfer === true || Boolean(updatedSession.builderOffer);
 
         const { amount, privacyAmount } = computeSplit(updatedSession.price, {
           driveaway: updatedSession.driveaway,

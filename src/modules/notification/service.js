@@ -89,7 +89,7 @@ class NotificationService {
   async deleteNotification(notiId, userId) {
     const notification = await Notification.findOneAndDelete({
       _id: notiId,
-      user: userId,
+      $or: [{ to_id: userId }, { user: userId }],
     });
     if (!notification) {
       throw new NotFoundError("Notification not found");

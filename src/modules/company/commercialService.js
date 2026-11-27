@@ -250,6 +250,7 @@ export async function getQuoteForUser(userId, body) {
     regionName: body.regionName,
     location: body.location,
     rotationType: body.rotationType || "initial",
+    additionalTons: body.additionalTons ?? body.extraTons ?? 0,
   });
 }
 
@@ -1012,9 +1013,9 @@ export async function recordOrderWeight(
         ? "Weight recorded (overage may apply)"
         : "Weight recorded",
     description: overage.billed
-      ? `Overage of ${overage.overageTons} tons ($${overage.amount}) was billed.`
+      ? `Overage of ${Number(overage.overageTons).toFixed(2)} tons ($${Number(overage.amount).toFixed(2)}) was billed.`
       : overage.mayApply
-        ? `Weight ${weight} tons recorded; overage of ${overage.overageTons} tons may apply.`
+        ? `Weight ${weight} tons recorded; overage of ${Number(overage.overageTons).toFixed(2)} tons may apply.`
         : `Weight ${weight} tons recorded within included allowance.`,
     orderId: order._id.toString(),
     metadata: {

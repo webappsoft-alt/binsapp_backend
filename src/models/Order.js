@@ -511,6 +511,9 @@ const orderSchema = new mongoose.Schema(
       ],
       default: undefined,
     },
+    standardTons: { type: Number, default: null },
+    additionalTons: { type: Number, default: 0 },
+    additionalTonnagePrice: { type: Number, default: 0 },
     includedTons: { type: Number, default: null },
     overagePerTon: { type: Number, default: null },
     overageEnforced: { type: Boolean, default: false },
@@ -629,6 +632,29 @@ const orderSchema = new mongoose.Schema(
     builderOfferAllocation: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "BuilderOfferAllocation",
+      default: null,
+    },
+    loadSequenceNumber: {
+      type: Number,
+      default: 1,
+      min: 1,
+    },
+    estimatedLoads: {
+      type: Number,
+      default: 1,
+      min: 1,
+    },
+    awaitingPickupPayment: {
+      type: Boolean,
+      default: false,
+    },
+    pickupPaymentSettledAt: {
+      type: Date,
+      default: null,
+    },
+    pickupBillingRecord: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "BillingRecord",
       default: null,
     },
   },

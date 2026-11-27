@@ -313,3 +313,82 @@ export const adminInvite = async (req, res, next) => {
     next(error);
   }
 };
+
+export const getPaymentSetup = async (req, res, next) => {
+  try {
+    const data = await builderOfferService.getOfferPaymentSetup(req.user._id);
+    res.status(200).json({
+      status: "success",
+      message: "Payment setup fetched",
+      data,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const createSetupIntent = async (req, res, next) => {
+  try {
+    const data = await builderOfferService.createOfferCardSetupIntent(
+      req.user._id,
+    );
+    res.status(200).json({
+      status: "success",
+      message: "Setup intent created",
+      data,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const payOrRetryInvoice = async (req, res, next) => {
+  try {
+    const data = await builderOfferService.retryOfferInvoice(
+      req.user._id,
+      req.params.id,
+      req.params.billingId,
+    );
+    res.status(200).json({
+      status: "success",
+      message: "Invoice payment processed",
+      data,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const adjustInvoice = async (req, res, next) => {
+  try {
+    const data = await builderOfferService.adjustOfferInvoice(
+      req.user._id,
+      req.params.id,
+      req.params.billingId,
+      req.body,
+    );
+    res.status(200).json({
+      status: "success",
+      message: "Invoice adjusted",
+      data,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const collectPickupPayment = async (req, res, next) => {
+  try {
+    const data = await builderOfferService.collectOrderPickupPayment(
+      req.user._id,
+      req.params.orderId,
+    );
+    res.status(200).json({
+      status: "success",
+      message: "Pickup installment processed",
+      data,
+    });
+  } catch (error) {
+    next(error);
+  }
+};

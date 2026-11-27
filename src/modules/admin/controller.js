@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import { BadRequestError } from "../../utils/apiError.js";
 import adminService from "./service.js";
 export async function adminLogin(req, res, next) {
@@ -225,8 +226,10 @@ export async function getAllUsers(req, res, next) {
       // Phone numbers in any format: "+92 309-6811835", "923096811835", "03096811835".
       const digits = searchText.replace(/\D/g, "").replace(/^0+/, "");
       const phoneRx = digits.length >= 6 ? new RegExp(digits.split("").join("[\\s\\-().]*")) : null;
+      const isObjectId = /^[a-fA-F0-9]{24}$/.test(searchText);
       conditions.push({
         $or: [
+          ...(isObjectId ? [{ _id: new mongoose.Types.ObjectId(searchText) }] : []),
           { name: rx },
           { comp_name: rx },
           { email: rx },

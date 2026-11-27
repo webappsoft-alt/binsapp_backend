@@ -18,6 +18,13 @@ export const BUILDER_OFFER_FULFILLMENT_PREFERENCES = Object.freeze([
   "multiple_providers",
 ]);
 
+export const BUILDER_BILLING_MODES = Object.freeze([
+  "scheduled_installments",
+  "per_load",
+  "grouped_loads",
+  "paid_in_full",
+]);
+
 export const BUILDER_OFFER_SERVICE_TYPES = Object.freeze([
   "dumpster",
   "junk",
@@ -61,10 +68,18 @@ export const BUILDER_OFFER_EVENT_TYPES = Object.freeze([
   "accepted",
   "rejected_portion",
   "adjusted",
+  "revised_rebroadcast",
   "counter_submitted",
   "counter_accepted",
   "counter_rejected",
   "needs_adjustment",
+  "installment_charged",
+  "payment_failed",
+  "payment_retried",
+  "pickup_payment_collected",
+  "rotations_paused",
+  "rotations_resumed",
+  "invoice_adjusted",
   "fulfilled",
   "cancelled",
   "blanket_saved",
@@ -76,8 +91,10 @@ export const BUILDER_OFFER_SOCKET_EVENTS = Object.freeze({
   updated: "builder-offer:updated",
   portion: "builder-offer:portion",
   accepted: "builder-offer:accepted",
+  lockedOut: "builder-offer:locked-out",
   counter: "builder-offer:counter",
   needsAdjustment: "builder-offer:needs-adjustment",
+  installmentUpdated: "builder-offer:installment-updated",
 });
 
 /** Hours with remaining bins and no accepts before needs_adjustment. */

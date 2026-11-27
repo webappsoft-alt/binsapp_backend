@@ -240,9 +240,10 @@ export const renterCheckRate = async (req, res, next) => {
     const userId = req.user._id;
     const check = await orderService.renterCheckRate(userId);
     res.status(200).json({
-      success: true,
-      message: "Rate checked successfully",
-      data: check,
+      success: Boolean(check),
+      message: check ? "Rate checked successfully" : "No pending ratings",
+      data: check ? { ...check, order: check, success: true } : null,
+      order: check || null,
     });
   } catch (error) {
     next(error);
@@ -418,9 +419,10 @@ export const checkRate = async (req, res, next) => {
 
     const check = await orderService.checkRate(userId);
     res.status(200).json({
-      success: true,
-      message: "Rate checked successfully",
-      data: check,
+      success: Boolean(check),
+      message: check ? "Rate checked successfully" : "No pending ratings",
+      data: check ? { ...check, order: check, success: true } : null,
+      order: check || null,
     });
   } catch (error) {
     next(error);
@@ -847,8 +849,9 @@ export const sendRenterCrmFollowupController = async (req, res, next) => {
 
 export const checkRenterCustomerExistsController = async (req, res, next) => {
   try {
+    const providerId = req.user?._id || null;
     const { phone, email } = req.body || req.query;
-    const result = await orderService.checkCustomerExists({ phone, email });
+    const result = await orderService.checkCustomerExists({ phone, email, providerId });
     res.status(200).json({
       success: true,
       data: result,
@@ -891,6 +894,28 @@ export const createRenterCustomerController = async (req, res, next) => {
     res.status(201).json({
       success: true,
       message: "Customer account created successfully and welcome details sent.",
+      data: customer,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const addRenterCustomerController = async (req, res, next) => {
+  try {
+    const providerId = req.user._id;
+    const { customerId, source, notes } = req.body || {};
+
+    const customer = await orderService.addRenterCustomer({
+      providerId,
+      customerId,
+      source,
+      notes,
+    });
+
+    res.status(200).json({
+      success: true,
+      message: "Customer added to your directory.",
       data: customer,
     });
   } catch (error) {

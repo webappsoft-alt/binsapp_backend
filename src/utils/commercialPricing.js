@@ -4,6 +4,11 @@ import CommercialGlobalPricing from "../models/CommercialGlobalPricing.js";
 import Dumbster from "../models/Dumbster.js";
 import JobSite from "../models/JobSites.js";
 import { BadRequestError, NotFoundError } from "./apiError.js";
+import {
+  DEFAULT_OVERAGE_PER_TON,
+  defaultIncludedTonsForSize,
+  normalizeAdditionalTons,
+} from "./dumpsterZonePricing.js";
 
 export const COMMERCIAL_SIZES = ["10", "15", "20", "30", "40"];
 
@@ -419,6 +424,8 @@ export async function quoteCommercialDumpster({
   regionName,
   location,
   rotationType = "initial",
+  additionalTons = 0,
+  extraTons = 0,
 } = {}) {
   if (!companyId) {
     throw new BadRequestError("companyId is required for a commercial quote");
@@ -717,17 +724,39 @@ export async function quoteCommercialDumpster({
     }
   }
 
-  const unitTotal = unitPackagePrice + unitPerDiemCharge;
-  const total = Math.round(unitTotal * qty * 100) / 100;
-
-  const includedTons =
+  const rawStandardTons =
     termsEnabled && activeTerms?.includedTonsPerRotation != null
       ? Number(activeTerms.includedTonsPerRotation)
       : Number(resolved.card.includedTons) || 0;
-  const overagePerTon =
+  const standardTons =
+    rawStandardTons > 0
+      ? rawStandardTons
+      : Number(dumpster?.tons) > 0
+        ? Number(dumpster.tons)
+        : defaultIncludedTonsForSize(dumpster?.size || resolvedSize) || 0;
+  const rawOveragePerTon =
     termsEnabled && activeTerms?.overagePerTon != null
       ? Number(activeTerms.overagePerTon)
       : Number(resolved.card.overagePerTon) || 0;
+  const additionalTonRate =
+    rawOveragePerTon > 0
+      ? rawOveragePerTon
+      : Number(dumpster?.overagePerTon) > 0
+        ? Number(dumpster.overagePerTon)
+        : DEFAULT_OVERAGE_PER_TON;
+  const overagePerTon = rawOveragePerTon > 0 ? rawOveragePerTon : additionalTonRate;
+
+  const requestedExtraTons = normalizeAdditionalTons(additionalTons || extraTons);
+  const additionalTonnageCharge =
+    Math.round(requestedExtraTons * additionalTonRate * 100) / 100;
+  const additionalTonnageTotal =
+    Math.round(additionalTonnageCharge * qty * 100) / 100;
+  const includedTons =
+    Math.round((standardTons + requestedExtraTons) * 100) / 100;
+
+  const unitTotal = unitPackagePrice + unitPerDiemCharge + additionalTonnageCharge;
+  const total = Math.round(unitTotal * qty * 100) / 100;
+
   const perDiemRate =
     termsEnabled && activeTerms?.extraDay != null
       ? Number(activeTerms.extraDay)
@@ -770,12 +799,23 @@ export async function quoteCommercialDumpster({
       extraDays: packageQuote.extraDays,
       perDiemRate,
       perDiemCharge: unitPerDiemCharge,
+      standardTons,
+      additionalTons: requestedExtraTons,
+      additionalTonRate,
+      additionalTonnageCharge,
+      additionalTonnageTotal,
+      totalIncludedTons: includedTons,
       quantity: qty,
       unitTotal,
       total,
       tierRates,
     },
     tonnage: {
+      standardTons,
+      additionalTons: requestedExtraTons,
+      additionalTonRate,
+      additionalTonnageCharge,
+      additionalTonnageTotal,
       includedTons,
       overagePerTon,
       overageEnforced: Boolean(resolved.card.overageEnforced),
@@ -792,11 +832,12 @@ export function computeOverageCharge({
   overagePerTon,
   overageEnforced,
 }) {
+  const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
   const actual = Number(actualWeight) || 0;
   const included = Number(includedTons) || 0;
   const rate = Number(overagePerTon) || 0;
-  const overageTons = Math.max(0, actual - included);
-  const amount = overageTons * rate;
+  const overageTons = round2(Math.max(0, actual - included));
+  const amount = round2(overageTons * rate);
   return {
     overageTons,
     amount,

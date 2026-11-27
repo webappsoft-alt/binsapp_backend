@@ -31,6 +31,7 @@ import jobQueue from "../../utils/jobQueue.js";
 import path from "path";
 import { fileURLToPath } from "url";
 import JunkRemoval from "../../models/JunkRemoval.js";
+import { hydrateOperatorsJunkEligibility } from "../../utils/junkEligibility.js";
 import TreeRemoval from "../../models/TreeRemoval.js";
 import Company from "../../models/Company.js";
 import JobSite from "../../models/JobSites.js";
@@ -116,6 +117,7 @@ class adminService {
         .sort({ createdAt: -1 })
         .skip((page - 1) * limit)
         .limit(limit);
+      const hydratedUsers = await hydrateOperatorsJunkEligibility(users);
       const totalUsers = await User.countDocuments(query);
       const pagination = {
         page,
@@ -123,7 +125,7 @@ class adminService {
         totalUsers,
         totalPages: Math.ceil(totalUsers / limit),
       };
-      return { users, pagination };
+      return { users: hydratedUsers, pagination };
     } catch (error) {
       logger.error("method getAllUsers in adminService failed", error);
       throw error;

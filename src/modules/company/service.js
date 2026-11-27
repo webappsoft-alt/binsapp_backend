@@ -159,7 +159,16 @@ class CompanyService {
 
   async getCompanyByIdAdmin(id) {
     try {
-      const company = await this.Company.findById(id).populate("user").lean();
+      const company = await this.Company.findById(id)
+        .populate({
+          path: "user",
+          populate: [
+            { path: "company" },
+            { path: "junkRemoval" },
+            { path: "treeRemoval" },
+          ],
+        })
+        .lean();
       if (!company) {
         throw new this.NotFoundError("Company not found");
       }
@@ -621,12 +630,16 @@ class CompanyService {
         service_type: { $in: ["Dumbster", "Porta Potty"] },
       })
         .select(
-          "orderNumber status service_type start_date end_date price total_price dumbster portaPotty jobSite swapRequest readyToPickup num_days to_id"
+          "orderNumber status service_type start_date end_date price total_price dumbster portaPotty jobSite swapRequest readyToPickup num_days to_id builderOffer loadSequenceNumber"
         )
         .populate("dumbster", "name size price tons weight image")
         .populate("portaPotty", "name price type")
         .populate("jobSite", "siteName address poNumber")
         .populate("to_id", "comp_name name")
+        .populate(
+          "builderOffer",
+          "title exchangeMode exchangeEveryDays estimatedLoads loadsCompleted rotationsPaused maxOnsiteAtOnce billingMode"
+        )
         .sort({ createdAt: -1 })
         .limit(6)
         .lean(),
@@ -638,11 +651,15 @@ class CompanyService {
         ],
       })
         .select(
-          "orderNumber status service_type start_date end_date price total_price dumbster jobSite to_id"
+          "orderNumber status service_type start_date end_date price total_price dumbster jobSite to_id builderOffer loadSequenceNumber"
         )
         .populate("dumbster", "name size price tons weight image")
         .populate("jobSite", "siteName address poNumber")
         .populate("to_id", "comp_name name")
+        .populate(
+          "builderOffer",
+          "title exchangeMode exchangeEveryDays estimatedLoads loadsCompleted rotationsPaused maxOnsiteAtOnce billingMode"
+        )
         .sort({ start_date: 1 })
         .limit(5)
         .lean(),
@@ -792,6 +809,10 @@ class CompanyService {
         .populate("userIds", "name comp_name image rating")
         .populate("swapRequest.linkedDropoffOrder")
         .populate("swapRequest.linkedPickupOrder")
+        .populate(
+          "builderOffer",
+          "title exchangeMode exchangeEveryDays estimatedLoads loadsCompleted rotationsPaused maxOnsiteAtOnce billingMode"
+        )
         .sort({ updatedAt: -1, createdAt: -1 })
         .limit(150)
         .lean();

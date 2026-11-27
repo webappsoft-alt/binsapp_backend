@@ -1,6 +1,7 @@
 import Joi from "joi";
 import {
   BUILDER_ADVANCE_NOTICE_OPTIONS,
+  BUILDER_BILLING_MODES,
   BUILDER_EXCHANGE_MODES,
   BUILDER_EXCHANGE_TURNAROUND_OPTIONS,
   BUILDER_FINAL_PICKUP_MODES,
@@ -81,8 +82,35 @@ export const createOfferValidation = Joi.object({
   materialOther: Joi.string().allow("", null),
   materialPhotoUrl: Joi.string().allow("", null),
   includedTonnage: Joi.number().allow(null),
+  additionalTons: Joi.number().min(0).default(0),
   additionalTonnageRate: Joi.number().min(0).allow(null),
   additionalDayRate: Joi.number().min(0).allow(null),
+  estimatedLoads: Joi.number().integer().min(1).default(1),
+  maxOnsiteAtOnce: Joi.number().integer().min(1).allow(null),
+  billingMode: Joi.string()
+    .valid(...BUILDER_BILLING_MODES)
+    .default("scheduled_installments"),
+  installmentCount: Joi.number().integer().min(1).max(100),
+  groupedLoadSize: Joi.number().integer().min(1).max(50),
+  installmentPlan: Joi.array().items(
+    Joi.object({
+      index: Joi.number().integer().min(1).required(),
+      label: Joi.string().allow("", null),
+      trigger: Joi.string().valid(
+        "acceptance",
+        "load",
+        "pickup",
+        "milestone_date",
+        "grouped_loads",
+      ),
+      loadNumber: Joi.number().integer().min(1).allow(null),
+      loadRangeEnd: Joi.number().integer().min(1).allow(null),
+      dueDate: Joi.date().iso().allow(null),
+      amount: Joi.number().min(0).required(),
+    }),
+  ),
+  termsAccepted: Joi.boolean(),
+  revisionReason: Joi.string().allow("", null),
   exchangeRequirements: Joi.string().allow("", null),
   estimatedRecurringVolume: Joi.string().allow("", null),
   advanceNotice: Joi.string()

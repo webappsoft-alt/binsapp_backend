@@ -1,6 +1,7 @@
 import { Schema, model } from "mongoose";
 import {
   BUILDER_ADVANCE_NOTICE_OPTIONS,
+  BUILDER_BILLING_MODES,
   BUILDER_EXCHANGE_MODES,
   BUILDER_EXCHANGE_TURNAROUND_OPTIONS,
   BUILDER_FINAL_PICKUP_MODES,
@@ -12,6 +13,50 @@ import {
   COMMERCIAL_LINE_UNIT_KEYS,
   LINE_TYPE_FEE_ELIGIBLE,
 } from "../constants/builderOffer.js";
+
+const installmentPlanItemSchema = new Schema(
+  {
+    index: { type: Number, required: true, min: 1 },
+    label: { type: String, default: "" },
+    trigger: {
+      type: String,
+      enum: ["acceptance", "load", "pickup", "milestone_date", "grouped_loads"],
+      default: "load",
+    },
+    loadNumber: { type: Number, default: null },
+    loadRangeEnd: { type: Number, default: null },
+    dueDate: { type: Date, default: null },
+    amount: { type: Number, default: 0, min: 0 },
+    status: {
+      type: String,
+      enum: ["scheduled", "due", "paid", "failed", "disputed", "cancelled"],
+      default: "scheduled",
+    },
+    billingRecord: {
+      type: Schema.Types.ObjectId,
+      ref: "BillingRecord",
+      default: null,
+    },
+    paidAt: { type: Date, default: null },
+    failureReason: { type: String, default: "" },
+    retryCount: { type: Number, default: 0 },
+    lastAttemptAt: { type: Date, default: null },
+  },
+  { _id: true },
+);
+
+const revisionEntrySchema = new Schema(
+  {
+    updatedAt: { type: Date, default: Date.now },
+    updatedBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
+    reason: { type: String, default: "" },
+    previousBuilderTotal: { type: Number, default: 0 },
+    newBuilderTotal: { type: Number, default: 0 },
+    previousLoads: { type: Number, default: 1 },
+    newLoads: { type: Number, default: 1 },
+  },
+  { _id: true },
+);
 
 const pricingScheduleItemSchema = new Schema(
   {
@@ -156,10 +201,46 @@ const builderOfferSchema = new Schema(
     materialOther: { type: String, default: "" },
     materialPhotoUrl: { type: String, default: "" },
     includedTonnage: { type: Number, default: null },
+    additionalTons: { type: Number, default: 0, min: 0 },
     additionalTonnageRate: { type: Number, default: null },
     additionalDayRate: { type: Number, default: null },
+    estimatedLoads: { type: Number, default: 1, min: 1 },
+    loadsCompleted: { type: Number, default: 0, min: 0 },
+    maxOnsiteAtOnce: { type: Number, default: null, min: 1 },
     exchangeRequirements: { type: String, default: "" },
     estimatedRecurringVolume: { type: String, default: "" },
+    billingMode: {
+      type: String,
+      enum: BUILDER_BILLING_MODES,
+      default: "scheduled_installments",
+    },
+    installmentCount: { type: Number, default: 1, min: 1 },
+    groupedLoadSize: { type: Number, default: 5, min: 1 },
+    installmentPlan: { type: [installmentPlanItemSchema], default: [] },
+    contractLedger: {
+      estimatedContractValue: { type: Number, default: 0 },
+      invoicedTotal: { type: Number, default: 0 },
+      collectedTotal: { type: Number, default: 0 },
+      unpaidDueTotal: { type: Number, default: 0 },
+      disputedTotal: { type: Number, default: 0 },
+      refundedTotal: { type: Number, default: 0 },
+      futureRemainingTotal: { type: Number, default: 0 },
+      providerEarnedTotal: { type: Number, default: 0 },
+      providerEligiblePayoutTotal: { type: Number, default: 0 },
+      providerDisbursedTotal: { type: Number, default: 0 },
+    },
+    termsAcceptedAt: { type: Date, default: null },
+    paymentSetupValidated: { type: Boolean, default: false },
+    awardedProvider: {
+      type: Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+      index: true,
+    },
+    rotationsPaused: { type: Boolean, default: false },
+    rotationsPausedReason: { type: String, default: "" },
+    rotationsPausedAt: { type: Date, default: null },
+    revisionHistory: { type: [revisionEntrySchema], default: [] },
     advanceNotice: {
       type: String,
       enum: [...BUILDER_ADVANCE_NOTICE_OPTIONS, null],

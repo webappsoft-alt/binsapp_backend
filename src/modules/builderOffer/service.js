@@ -11,7 +11,20 @@ import BuilderOffer from "../../models/BuilderOffer.js";
 import BuilderOfferAllocation from "../../models/BuilderOfferAllocation.js";
 import BuilderOfferCounter from "../../models/BuilderOfferCounter.js";
 import BuilderOfferEvent from "../../models/BuilderOfferEvent.js";
-import { computeSplitFromLines, createOffSessionHold } from "../../utils/paymentHold.js";
+import {
+  buildDefaultInstallmentPlan,
+  createContractInvoicesOnAward,
+  recomputeContractLedger,
+  verifyOfferPaymentReady,
+  payOrRetryOfferInvoice,
+  adjustContractInvoice,
+  triggerScheduledContractInvoice,
+} from "../../utils/builderOfferBilling.js";
+import {
+  computeSplitFromLines,
+  createCardSetupIntent,
+  validateSavedCardPaymentMethod,
+} from "../../utils/paymentHold.js";
 import {
   BUILDER_OFFER_SOCKET_EVENTS,
   BUILDER_OFFER_STUCK_HOURS,
@@ -371,190 +384,13 @@ async function settleAllocationBilling({
   allocation,
   ordersByLineIndex,
 }) {
-  const paymentMethod = company.paymentMethod || "invoice";
-  allocation.paymentMethod = paymentMethod;
-
-  if (paymentMethod === "card") {
-    const owner = await User.findById(company.user).select("cus_id").lean();
-    if (!owner?.cus_id) {
-      throw new BadRequestError(
-        "Company is set to card payment but has no Stripe customer on file",
-      );
-    }
-    const hold = await createOffSessionHold({
-      customerId: owner.cus_id,
-      amountDollars: allocation.builderPortion,
-      metadata: {
-        source: "builder_offer",
-        builderOfferId: offer._id.toString(),
-        allocationId: allocation._id.toString(),
-        companyId: company._id.toString(),
-      },
-    });
-    if (!hold.success) {
-      throw new BadRequestError(
-        hold.message || "Unable to authorize card hold for builder offer portion",
-      );
-    }
-    allocation.paymentHoldId = hold.paymentId;
-  }
-
-  const netDays = Number(company.invoiceTerms?.netDays) || 30;
-  const dueDate = new Date();
-  dueDate.setUTCDate(dueDate.getUTCDate() + netDays);
-
-  const provider = await User.findById(allocation.provider)
-    .select("name email phone comp_name")
-    .lean();
-
-  const jobsitesById = new Map();
-  const lineItems = allocation.lines.map((al, i) => {
-    const offerLine = resolveOfferLine(offer, al.lineId);
-    const jobsiteId = offerLine?.jobsite ? String(offerLine.jobsite) : null;
-    const siteName = offerLine?.siteName || "";
-    const city = offerLine?.city || "";
-    const state = offerLine?.state || "";
-    if (jobsiteId) {
-      jobsitesById.set(jobsiteId, {
-        id: jobsiteId,
-        siteName,
-        city,
-        state,
-      });
-    } else if (siteName) {
-      const key = `name:${siteName}`;
-      if (!jobsitesById.has(key)) {
-        jobsitesById.set(key, {
-          id: null,
-          siteName,
-          city,
-          state,
-        });
-      }
-    }
-    return {
-      type: "builder_offer",
-      description: `Builder Offer ${offer.title || offer._id} · ${al.size}-yard × ${al.quantity}${siteName ? ` · ${siteName}` : ""}`,
-      amount: Number(al.lineBuilderTotal) || 0,
-      order: ordersByLineIndex[i]?._id || null,
-      metadata: {
-        source: "builder_offer",
-        builderOfferId: offer._id.toString(),
-        allocationId: allocation._id.toString(),
-        lineId: al.lineId ? String(al.lineId) : null,
-        size: al.size,
-        quantity: al.quantity,
-        unitBuilderPrice: al.unitBuilderPrice,
-        feeEligible: al.feeEligible,
-        platformFee: al.platformFee,
-        providerPayout: al.providerPayout,
-        jobsiteId,
-        siteName,
-        city,
-        state,
-        address: offerLine?.address || "",
-        deliveryDate: offerLine?.deliveryDate || null,
-        deliveryWindow: offerLine?.deliveryWindow || offer.deliveryWindow || "",
-        rentalDays: offerLine?.rentalDays || offer.rentalPeriodDays || null,
-        placementInstructions: offerLine?.placementInstructions || "",
-        projectName: offerLine?.projectName || "",
-        jobNumber: offerLine?.jobNumber || "",
-        poNumber: offerLine?.poNumber || "",
-        siteContactName: offerLine?.siteContactName || "",
-        siteContactPhone: offerLine?.siteContactPhone || "",
-      },
-      createdAt: new Date(),
-    };
+  const created = await createContractInvoicesOnAward({
+    company,
+    offer,
+    allocation,
+    ordersByLineIndex,
   });
-
-  const invoiceNumber = `INV-${generateOTP(8, { alphabet: true, numeric: true })}`;
-  const firstOrderId = ordersByLineIndex.find(Boolean)?._id || null;
-  const billingRecord = await BillingRecord.create({
-    company: company._id,
-    user: company.user,
-    order: firstOrderId,
-    invoiceNumber,
-    status: "open",
-    amount: allocation.builderPortion,
-    dueDate,
-    lineItems,
-    metadata: {
-      source: "builder_offer",
-      builderOfferId: offer._id.toString(),
-      allocationId: allocation._id.toString(),
-      paymentMethod,
-      paymentHoldId: allocation.paymentHoldId || null,
-      offerTitle: offer.title || "",
-      serviceType: offer.serviceType || "dumpster",
-      binsAccepted: allocation.binsAccepted,
-      platformFee: allocation.platformFee,
-      providerPayout: allocation.providerPayout,
-      providerId: allocation.provider ? String(allocation.provider) : null,
-      providerName: provider?.name || provider?.comp_name || "",
-      providerEmail: provider?.email || "",
-      providerPhone: provider?.phone || "",
-      jobsites: [...jobsitesById.values()],
-      commercialTerms: {
-        rentalPeriodDays: offer.rentalPeriodDays,
-        advanceNotice: offer.advanceNotice,
-        deliveryWindow: offer.deliveryWindow,
-        exchangeMode: offer.exchangeMode,
-        exchangeEveryDays: offer.exchangeEveryDays,
-        exchangeTurnaround: offer.exchangeTurnaround,
-        exchangeTurnaroundCustom: offer.exchangeTurnaroundCustom,
-        exchangeTurnaroundDate: offer.exchangeTurnaroundDate,
-        finalPickupMode: offer.finalPickupMode,
-        finalPickupDate: offer.finalPickupDate,
-        authorizedPickupName: offer.authorizedPickupName || "",
-        authorizedPickupPhone: offer.authorizedPickupPhone || "",
-        includedTonnage: offer.includedTonnage,
-        additionalTonnageRate: offer.additionalTonnageRate,
-        additionalDayRate: offer.additionalDayRate,
-        material: offer.material,
-        materialOther: offer.materialOther,
-        eachServiceIsSeparateOrder: offer.eachServiceIsSeparateOrder !== false,
-      },
-      pricingSchedule: Array.isArray(offer.pricingSchedule)
-        ? offer.pricingSchedule
-        : [],
-    },
-  });
-
-  for (const order of uniqueOrders(ordersByLineIndex)) {
-    order.billingRecord = billingRecord._id;
-    if (allocation.paymentHoldId) {
-      order.paymentId = allocation.paymentHoldId;
-      order.payment_type = "stripe";
-    } else {
-      order.payment_type = "invoice";
-    }
-    await order.save();
-  }
-
-  allocation.billingRecord = billingRecord._id;
-
-  try {
-    await notifyCommercialParties({
-      actorId: company.user,
-      customer: { _id: company.user, email: company.accountsPayableEmail },
-      type: "invoice_created",
-      title: "Builder offer invoice created",
-      description: `Invoice ${invoiceNumber} for $${Number(allocation.builderPortion).toFixed(2)} was created for ${offer.title || "Builder Offer"}.`,
-      orderId: firstOrderId?.toString?.() || firstOrderId,
-      metadata: {
-        action: "invoice_created",
-        kind: "builder_offer",
-        offerId: offer._id.toString(),
-        invoiceId: billingRecord._id.toString(),
-        invoiceNumber,
-        screen: "builder_offer_detail",
-      },
-    });
-  } catch (err) {
-    logger.error("builder_offer.invoice_notify_failed", { error: err?.message });
-  }
-
-  return billingRecord;
+  return created[0] || null;
 }
 
 /**
@@ -935,8 +771,23 @@ function publicOfferDto(offer, { allocations = [], counters = [], recommendation
     materialOther: offer.materialOther,
     materialPhotoUrl: offer.materialPhotoUrl,
     includedTonnage: offer.includedTonnage,
+    additionalTons: Number(offer.additionalTons) || 0,
     additionalTonnageRate: offer.additionalTonnageRate,
     additionalDayRate: offer.additionalDayRate,
+    estimatedLoads: Number(offer.estimatedLoads) || 1,
+    loadsCompleted: Number(offer.loadsCompleted) || 0,
+    maxOnsiteAtOnce: offer.maxOnsiteAtOnce || null,
+    billingMode: offer.billingMode || "scheduled_installments",
+    installmentCount: Number(offer.installmentCount) || 1,
+    groupedLoadSize: Number(offer.groupedLoadSize) || 5,
+    installmentPlan: offer.installmentPlan || [],
+    contractLedger: offer.contractLedger || null,
+    termsAcceptedAt: offer.termsAcceptedAt || null,
+    paymentSetupValidated: Boolean(offer.paymentSetupValidated),
+    awardedProvider: offer.awardedProvider || null,
+    rotationsPaused: Boolean(offer.rotationsPaused),
+    rotationsPausedReason: offer.rotationsPausedReason || "",
+    revisionHistory: offer.revisionHistory || [],
     exchangeRequirements: offer.exchangeRequirements,
     estimatedRecurringVolume: offer.estimatedRecurringVolume,
     advanceNotice: offer.advanceNotice,
@@ -990,7 +841,7 @@ export async function createOffer(userId, body = {}) {
     regionLabel: body.regionLabel || "",
     status: "draft",
     fulfillmentPreference:
-      body.fulfillmentPreference || "multiple_providers",
+      body.fulfillmentPreference || "single_provider",
     serviceType: body.serviceType || "dumpster",
     rentalPeriodDays: Number(body.rentalPeriodDays) || 30,
     material: body.material || "",
@@ -998,12 +849,31 @@ export async function createOffer(userId, body = {}) {
     materialPhotoUrl: body.materialPhotoUrl || "",
     includedTonnage:
       body.includedTonnage != null ? Number(body.includedTonnage) : null,
+    additionalTons: Math.max(0, Number(body.additionalTons) || 0),
     additionalTonnageRate:
       body.additionalTonnageRate != null
         ? Number(body.additionalTonnageRate)
         : null,
     additionalDayRate:
       body.additionalDayRate != null ? Number(body.additionalDayRate) : null,
+    estimatedLoads: Math.max(1, Math.floor(Number(body.estimatedLoads) || 1)),
+    maxOnsiteAtOnce:
+      body.maxOnsiteAtOnce != null ? Number(body.maxOnsiteAtOnce) : null,
+    billingMode: body.billingMode || "scheduled_installments",
+    installmentCount: Math.max(
+      1,
+      Math.floor(
+        Number(body.installmentCount) ||
+          (Math.max(1, Math.floor(Number(body.estimatedLoads) || 1)) === 1 &&
+          (body.billingMode || "scheduled_installments") ===
+            "scheduled_installments" &&
+          body.termsAccepted
+            ? 2
+            : Math.max(1, Math.floor(Number(body.estimatedLoads) || 1))),
+      ),
+    ),
+    groupedLoadSize: Math.max(1, Number(body.groupedLoadSize) || 5),
+    termsAcceptedAt: body.termsAccepted ? new Date() : null,
     exchangeRequirements: body.exchangeRequirements || "",
     estimatedRecurringVolume: body.estimatedRecurringVolume || "",
     advanceNotice: body.advanceNotice || null,
@@ -1032,6 +902,11 @@ export async function createOffer(userId, body = {}) {
       : defaultExpiresAt(),
   });
   applyTotals(offer);
+  offer.installmentPlan =
+    Array.isArray(body.installmentPlan) && body.installmentPlan.length
+      ? body.installmentPlan
+      : buildDefaultInstallmentPlan(offer);
+  await recomputeContractLedger(offer, []);
   await offer.save();
   await recordEvent({
     offer,
@@ -1223,10 +1098,16 @@ export async function getCompanyOffer(userId, offerId) {
       .lean(),
     BuilderOfferCounter.find({ offer: offer._id }).sort({ createdAt: -1 }).lean(),
     getRecommendationForOffer(offer),
-    BillingRecord.find({ "metadata.builderOfferId": String(offer._id) })
-      .sort({ createdAt: -1 })
+    BillingRecord.find({
+      $or: [
+        { contract: offer._id },
+        { "metadata.builderOfferId": String(offer._id) },
+      ],
+    })
+      .sort({ installmentIndex: 1, createdAt: 1 })
       .lean(),
   ]);
+  await recomputeContractLedger(offer, invoices);
   const { enrichBillingRecordsForDisplay } = await import(
     "../company/commercialService.js"
   );
@@ -1258,7 +1139,9 @@ export async function getCompanyOffer(userId, offerId) {
     }),
   }));
   const pendingInvs = enrichedInvoices.filter((inv) =>
-    ["open", "due", "partial"].includes(String(inv.status || "open")),
+    ["open", "due", "partial", "failed", "scheduled"].includes(
+      String(inv.status || "open"),
+    ),
   );
   dto.transparency = {
     providerCount: dto.allocations.length,
@@ -1376,10 +1259,22 @@ export async function updateDraftOrAdjust(userId, offerId, body = {}) {
   });
   if (!offer) throw new NotFoundError("Builder offer not found");
 
-  const adjustable = ["draft", "open", "partially_fulfilled", "needs_adjustment"];
+  const adjustable = [
+    "draft",
+    "open",
+    "partially_fulfilled",
+    "needs_adjustment",
+    "expired",
+  ];
   if (!adjustable.includes(offer.status)) {
     throw new BadRequestError(`Cannot modify offer in status ${offer.status}`);
   }
+
+  const prevTotal = Number(offer.builderTotal) || 0;
+  const prevLoads = Number(offer.estimatedLoads) || 1;
+  const wasBroadcast = ["open", "partially_fulfilled", "needs_adjustment", "expired"].includes(
+    offer.status,
+  );
 
   if (body.title != null) offer.title = body.title;
   if (body.regionLabel != null) offer.regionLabel = body.regionLabel;
@@ -1397,11 +1292,32 @@ export async function updateDraftOrAdjust(userId, offerId, body = {}) {
   if (body.includedTonnage != null) {
     offer.includedTonnage = Number(body.includedTonnage);
   }
+  if (body.additionalTons != null) {
+    offer.additionalTons = Math.max(0, Number(body.additionalTons) || 0);
+  }
   if (body.additionalTonnageRate != null) {
     offer.additionalTonnageRate = Number(body.additionalTonnageRate);
   }
   if (body.additionalDayRate != null) {
     offer.additionalDayRate = Number(body.additionalDayRate);
+  }
+  if (body.estimatedLoads != null) {
+    offer.estimatedLoads = Math.max(1, Math.floor(Number(body.estimatedLoads) || 1));
+  }
+  if (body.maxOnsiteAtOnce != null) {
+    offer.maxOnsiteAtOnce = Number(body.maxOnsiteAtOnce) || null;
+  }
+  if (body.billingMode) {
+    offer.billingMode = body.billingMode;
+  }
+  if (body.installmentCount != null) {
+    offer.installmentCount = Math.max(1, Math.floor(Number(body.installmentCount) || 1));
+  }
+  if (body.groupedLoadSize != null) {
+    offer.groupedLoadSize = Math.max(1, Math.floor(Number(body.groupedLoadSize) || 5));
+  }
+  if (body.termsAccepted) {
+    offer.termsAcceptedAt = new Date();
   }
   if (body.exchangeRequirements != null) {
     offer.exchangeRequirements = body.exchangeRequirements;
@@ -1481,21 +1397,49 @@ export async function updateDraftOrAdjust(userId, offerId, body = {}) {
   }
 
   applyTotals(offer);
+  if (Array.isArray(body.installmentPlan) && body.installmentPlan.length) {
+    offer.installmentPlan = body.installmentPlan;
+  } else if (!offer.binsCommitted) {
+    offer.installmentPlan = buildDefaultInstallmentPlan(offer);
+  }
+  await recomputeContractLedger(offer);
+
+  if (wasBroadcast && offer.binsCommitted === 0) {
+    offer.revisionHistory = offer.revisionHistory || [];
+    offer.revisionHistory.push({
+      updatedAt: new Date(),
+      updatedBy: userId,
+      reason: String(body.revisionReason || "").trim() || "Rebroadcast / adjustment",
+      previousBuilderTotal: prevTotal,
+      newBuilderTotal: Number(offer.builderTotal) || 0,
+      previousLoads: prevLoads,
+      newLoads: Number(offer.estimatedLoads) || 1,
+    });
+  }
+
   if (offer.status === "draft") {
     // stay draft unless submit
   } else if (offer.binsRemaining > 0) {
     offer.status = offer.binsCommitted > 0 ? "partially_fulfilled" : "open";
+    if (body.rematch) {
+      offer.expiresAt = defaultExpiresAt();
+    }
   }
   await offer.save();
   await recordEvent({
     offer,
     actor: userId,
     actorRole: "company",
-    type: "adjusted",
-    payload: { builderTotal: offer.builderTotal },
+    type: wasBroadcast ? "revised_rebroadcast" : "adjusted",
+    payload: { builderTotal: offer.builderTotal, estimatedLoads: offer.estimatedLoads },
   });
 
   if (body.rematch || offer.status !== "draft") {
+    if (offer.status !== "draft") {
+      await verifyOfferPaymentReady({ company, offerTotal: offer.builderTotal });
+      offer.paymentSetupValidated = true;
+      await offer.save();
+    }
     await dispatchPortions(offer);
   }
 
@@ -1513,20 +1457,33 @@ export async function submitOffer(userId, offerId) {
     company: company._id,
   });
   if (!offer) throw new NotFoundError("Builder offer not found");
-  if (!["draft", "needs_adjustment"].includes(offer.status) && offer.binsCommitted === 0) {
-    // allow resubmit from draft primarily
-  }
   if (offer.status === "fulfilled") {
     throw new BadRequestError("Offer already fulfilled");
   }
-  if (offer.status === "draft") {
+
+  applyTotals(offer);
+  if (!Array.isArray(offer.installmentPlan) || !offer.installmentPlan.length) {
+    offer.installmentPlan = buildDefaultInstallmentPlan(offer);
+  }
+
+  // Verify saved card / Net arrangement BEFORE broadcast — charges $0 on submit
+  await verifyOfferPaymentReady({ company, offerTotal: offer.builderTotal });
+  offer.paymentSetupValidated = true;
+  if (!offer.termsAcceptedAt) {
+    offer.termsAcceptedAt = new Date();
+  }
+
+  if (offer.status === "draft" || offer.status === "expired") {
     offer.status = "open";
+    offer.expiresAt = offer.expiresAt && offer.expiresAt > new Date()
+      ? offer.expiresAt
+      : defaultExpiresAt();
   } else if (offer.status === "needs_adjustment") {
     offer.status = offer.binsCommitted > 0 ? "partially_fulfilled" : "open";
     offer.needsAdjustmentReason = "";
     offer.needsAdjustmentAt = null;
   }
-  applyTotals(offer);
+  await recomputeContractLedger(offer);
   await offer.save();
   await recordEvent({
     offer,
@@ -1769,6 +1726,10 @@ async function createOrderForAllocation({
     materialInformation: materialText,
     includedTons: offer.includedTonnage,
     overagePerTon: offer.additionalTonnageRate,
+    standardTons: offer.includedTonnage,
+    additionalTons: Number(offer.additionalTons) || 0,
+    estimatedLoads: Number(offer.estimatedLoads) || 1,
+    loadSequenceNumber: 1,
     placementLocation: primary.placementLabel || "",
     placementNote: primary.placementInstructions || "",
     placementPhotos: primary.placementPhotoUrl
@@ -1781,6 +1742,11 @@ async function createOrderForAllocation({
       allocationId: allocation._id.toString(),
       offerTitle: offer.title || "",
       serviceType: offer.serviceType || "dumpster",
+      estimatedLoads: Number(offer.estimatedLoads) || 1,
+      loadSequenceNumber: 1,
+      additionalTons: Number(offer.additionalTons) || 0,
+      billingMode: offer.billingMode || "scheduled_installments",
+      installmentCount: Number(offer.installmentCount) || 1,
       coalesced: resolvedLines.length > 1,
       lineCount: resolvedLines.length,
       sizes,
@@ -1949,9 +1915,34 @@ export async function acceptPortion(providerId, offerId, body = {}) {
     }
   }
 
-  // Atomic-ish: reload and apply under remaining caps (conditional on remaining)
-  const fresh = await BuilderOffer.findById(offerId);
-  if (!fresh) throw new NotFoundError("Builder offer not found");
+  // Atomic lock: single-provider contracts lock atomically on the first claim so two
+  // concurrent providers can never double-award the same offer.
+  let fresh;
+  if (offer.fulfillmentPreference === "single_provider") {
+    fresh = await BuilderOffer.findOneAndUpdate(
+      {
+        _id: offerId,
+        status: { $in: ["open", "needs_adjustment"] },
+        awardedProvider: null,
+        binsRemaining: { $gt: 0 },
+      },
+      {
+        $set: {
+          awardedProvider: providerId,
+          lastAcceptAt: new Date(),
+        },
+      },
+      { new: true },
+    );
+    if (!fresh) {
+      throw new BadRequestError(
+        "This offer was just claimed by another provider and is no longer available",
+      );
+    }
+  } else {
+    fresh = await BuilderOffer.findById(offerId);
+    if (!fresh) throw new NotFoundError("Builder offer not found");
+  }
   const needBefore = summarizeOfferProgress(fresh).binsRemaining;
   const allocLines = [];
   let binsAccepted = 0;
@@ -2126,6 +2117,9 @@ export async function acceptPortion(providerId, offerId, body = {}) {
             : "partial";
     }
     applyTotals(fresh);
+    if (String(fresh.awardedProvider) === String(providerId)) {
+      fresh.awardedProvider = null;
+    }
     await fresh.save();
     throw billErr;
   }
@@ -2169,6 +2163,20 @@ export async function acceptPortion(providerId, offerId, body = {}) {
   emitToUser(company.user, BUILDER_OFFER_SOCKET_EVENTS.updated, {
     offer: publicOfferDto(fresh),
   });
+  // Notify competing providers immediately so the locked offer disappears from their queue
+  if (fresh.binsRemaining === 0 && Array.isArray(fresh.notifiedProviderIds)) {
+    for (const pid of fresh.notifiedProviderIds) {
+      if (String(pid) === String(providerId)) continue;
+      emitToUser(pid, BUILDER_OFFER_SOCKET_EVENTS.lockedOut, {
+        offerId: fresh._id,
+        status: fresh.status,
+      });
+      emitToUser(pid, BUILDER_OFFER_SOCKET_EVENTS.updated, {
+        offerId: fresh._id,
+        status: fresh.status,
+      });
+    }
+  }
   await notifyCompanyOfferEvent({
     companyUserId: company.user,
     offer: fresh,
@@ -2609,6 +2617,11 @@ export async function listProviderPortions(providerId) {
   const openOffers = await BuilderOffer.find({
     status: { $in: ["open", "partially_fulfilled", "needs_adjustment"] },
     binsRemaining: { $gt: 0 },
+    $or: [
+      { fulfillmentPreference: { $ne: "single_provider" } },
+      { awardedProvider: null },
+      { awardedProvider: { $exists: false } },
+    ],
     notifiedProviderIds: providerId,
   })
     .populate(
@@ -2693,7 +2706,9 @@ export async function getAdminOffer(offerId) {
     }),
   }));
   const pendingInvs = enrichedInvoices.filter((inv) =>
-    ["open", "due", "partial"].includes(String(inv.status || "open")),
+    ["open", "due", "partial", "failed", "scheduled"].includes(
+      String(inv.status || "open"),
+    ),
   );
   dto.transparency = {
     providerCount: dto.allocations.length,
@@ -2781,4 +2796,127 @@ export async function adminInviteProvider(offerId, providerId) {
 
 export async function listCompanyOffersAdmin(companyId, opts) {
   return listAdminOffers({ ...opts, companyId });
+}
+
+export async function getOfferPaymentSetup(userId) {
+  const company = await requireApprovedCompany(userId);
+  const paymentMethod = company.paymentMethod || "card";
+  if (paymentMethod === "invoice") {
+    return {
+      paymentMethod: "invoice",
+      ready: true,
+      cardSummary: null,
+      netDays: Number(company.invoiceTerms?.netDays) || 30,
+      creditLimit: Number(company.invoiceTerms?.creditLimit) || 0,
+    };
+  }
+  const owner = await User.findById(company.user).select("cus_id email name").lean();
+  const check = await validateSavedCardPaymentMethod({ customerId: owner?.cus_id });
+  return {
+    paymentMethod: "card",
+    ready: Boolean(check.valid),
+    cardSummary: check.cardSummary || null,
+    message: check.valid ? "" : check.message,
+  };
+}
+
+export async function createOfferCardSetupIntent(userId) {
+  const company = await requireApprovedCompany(userId);
+  const owner = await User.findById(company.user);
+  if (!owner) throw new NotFoundError("Company owner account not found");
+
+  const res = await createCardSetupIntent({
+    customerId: owner.cus_id,
+    userId: owner._id,
+    email: owner.email || company.accountsPayableEmail,
+    name: owner.name || company.companyName,
+  });
+  if (!res.success) {
+    throw new BadRequestError(res.message || "Could not initialize card setup");
+  }
+  if (!owner.cus_id && res.customerId) {
+    owner.cus_id = res.customerId;
+    await owner.save();
+  }
+  return {
+    clientSecret: res.clientSecret,
+    customerId: res.customerId,
+    setupIntentId: res.setupIntentId,
+  };
+}
+
+export async function retryOfferInvoice(userId, offerId, billingId) {
+  const result = await payOrRetryOfferInvoice({ userId, offerId, billingId });
+  const company = await getCompanyForUser(userId).catch(() => null);
+  if (company?.user) {
+    emitToUser(company.user, BUILDER_OFFER_SOCKET_EVENTS.installmentUpdated, {
+      offerId,
+      billingId,
+      contractLedger: result.contractLedger,
+      installmentPlan: result.installmentPlan,
+    });
+  }
+  return result;
+}
+
+export async function adjustOfferInvoice(userId, offerId, billingId, body = {}) {
+  const result = await adjustContractInvoice({
+    actorId: userId,
+    offerId,
+    billingId,
+    type: body.type || "manual",
+    amount: body.amount,
+    reason: body.reason || "",
+  });
+  const company = await getCompanyForUser(userId).catch(() => null);
+  if (company?.user) {
+    emitToUser(company.user, BUILDER_OFFER_SOCKET_EVENTS.installmentUpdated, {
+      offerId,
+      billingId,
+      contractLedger: result.contractLedger,
+    });
+  }
+  return result;
+}
+
+export async function collectOrderPickupPayment(userId, orderId) {
+  const order = await Order.findById(orderId);
+  if (!order) throw new NotFoundError("Order not found");
+  const isOwner = String(order.user) === String(userId);
+  const isProvider = String(order.to_id) === String(userId);
+  if (!isOwner && !isProvider) {
+    throw new ForbiddenError("You do not have access to this order");
+  }
+  if (!order.builderOffer) {
+    return { success: true, noBuilderOffer: true };
+  }
+  const res = await triggerScheduledContractInvoice({
+    offerId: order.builderOffer,
+    triggerType: "pickup",
+    loadNumber: Number(order.loadSequenceNumber) || 1,
+    orderId: order._id,
+  });
+  if (!res.success) {
+    const err = new BadRequestError(
+      res.message || "Final pickup installment payment failed",
+    );
+    err.requiresPaymentModal = true;
+    err.pendingInvoice = res.invoice || null;
+    throw err;
+  }
+  order.awaitingPickupPayment = false;
+  order.pickupPaymentSettledAt = new Date();
+  await order.save();
+
+  emitToUser(order.user, BUILDER_OFFER_SOCKET_EVENTS.installmentUpdated, {
+    offerId: order.builderOffer,
+    orderId: order._id,
+    pickupPaymentSettled: true,
+  });
+  emitToUser(order.to_id, BUILDER_OFFER_SOCKET_EVENTS.installmentUpdated, {
+    offerId: order.builderOffer,
+    orderId: order._id,
+    pickupPaymentSettled: true,
+  });
+  return res;
 }

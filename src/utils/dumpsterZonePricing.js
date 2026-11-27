@@ -56,6 +56,15 @@ export const DEFAULT_INCLUDED_TONS = {
   "6-8": 1,
 };
 
+export const DEFAULT_OVERAGE_PER_TON = 85;
+export const MAX_ADDITIONAL_TONS = 50;
+
+export function normalizeAdditionalTons(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.min(MAX_ADDITIONAL_TONS, Math.round(n * 2) / 2);
+}
+
 export function defaultIncludedTonsForSize(size) {
   const key = String(size || "").trim();
   if (DEFAULT_INCLUDED_TONS[key] != null) return DEFAULT_INCLUDED_TONS[key];
@@ -220,7 +229,10 @@ export function rateFromDumpsterFallback(dumpster = {}) {
     sevenDayPrice: Number(dumpster.seven_days_price) || 0,
     includedTons:
       Number(dumpster.tons) || defaultIncludedTonsForSize(dumpster.size) || 0,
-    overagePerTon: Number(dumpster.overagePerTon) || 0,
+    overagePerTon:
+      Number(dumpster.overagePerTon) > 0
+        ? Number(dumpster.overagePerTon)
+        : DEFAULT_OVERAGE_PER_TON,
     extraDay:
       Number(dumpster.per_dim_rate) ||
       Number(dumpster.day_price_km) ||
@@ -262,9 +274,14 @@ export function applyZonePricingToDumpster(dumpster, zone, { materialType = "sta
     ...base
   } = dumpster;
 
-  // Tons + overage always from create-dumpster catalog
+  // Tons + overage always from create-dumpster catalog (fallback to zone/platform default if unset)
   const catalogTons = fallback.includedTons;
-  const catalogOverage = fallback.overagePerTon;
+  const catalogOverage =
+    Number(dumpster.overagePerTon) > 0
+      ? Number(dumpster.overagePerTon)
+      : Number(rate?.overagePerTon) > 0
+        ? Number(rate.overagePerTon)
+        : DEFAULT_OVERAGE_PER_TON;
 
   const applyFields = ({
     oneDay,

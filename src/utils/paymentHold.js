@@ -201,6 +201,170 @@ export async function createOffSessionHold({
   }
 }
 
+/**
+ * Verify that a Stripe customer has at least one saved tokenized card on file.
+ * Does NOT place a hold or capture any money (safe for pre-broadcast check).
+ */
+export async function validateSavedCardPaymentMethod({ customerId }) {
+  if (!customerId) {
+    return {
+      valid: false,
+      code: "missing_stripe_customer",
+      message: "Add a payment card before broadcasting this builder offer.",
+    };
+  }
+  try {
+    const paymentMethods = await stripe.paymentMethods.list({
+      customer: customerId,
+      type: "card",
+      limit: 5,
+    });
+    const pm = paymentMethods.data?.[0];
+    if (!pm) {
+      return {
+        valid: false,
+        code: "no_saved_card",
+        message: "No saved payment card found. Save a card before broadcasting.",
+      };
+    }
+    return {
+      valid: true,
+      paymentMethodId: pm.id,
+      cardSummary: {
+        id: pm.id,
+        brand: pm.card?.brand || "card",
+        last4: pm.card?.last4 || "****",
+        expMonth: pm.card?.exp_month || null,
+        expYear: pm.card?.exp_year || null,
+      },
+    };
+  } catch (error) {
+    logger.error("validateSavedCardPaymentMethod failed", {
+      customerId,
+      error: error.message,
+    });
+    return {
+      valid: false,
+      code: "stripe_lookup_failed",
+      message: error.message || "Could not verify saved payment method",
+    };
+  }
+}
+
+/**
+ * Create a $0 Stripe SetupIntent so a builder can save a tokenized card before broadcast.
+ */
+export async function createCardSetupIntent({ customerId, userId, email, name }) {
+  try {
+    let resolvedCusId = customerId;
+    if (!resolvedCusId) {
+      const customer = await stripe.customers.create({
+        ...(email ? { email } : {}),
+        ...(name ? { name } : {}),
+        metadata: { userId: String(userId || "") },
+      });
+      resolvedCusId = customer.id;
+    }
+    const setupIntent = await stripe.setupIntents.create({
+      customer: resolvedCusId,
+      payment_method_types: ["card"],
+      usage: "off_session",
+      metadata: {
+        userId: String(userId || ""),
+        purpose: "builder_offer_card_setup",
+      },
+    });
+    return {
+      success: true,
+      customerId: resolvedCusId,
+      clientSecret: setupIntent.client_secret,
+      setupIntentId: setupIntent.id,
+    };
+  } catch (error) {
+    logger.error("createCardSetupIntent failed", { error: error.message });
+    return { success: false, message: error.message };
+  }
+}
+
+/**
+ * Charge a saved tokenized card off-session immediately (e.g., 1st installment on accept
+ * or subsequent load/milestone installment). Never stores raw card details.
+ */
+export async function createOffSessionCharge({
+  customerId,
+  amountDollars,
+  metadata = {},
+  description = "",
+  idempotencyKey = null,
+}) {
+  if (!customerId) {
+    return { success: false, message: "No Stripe customer on file" };
+  }
+  const amountCents = Math.round(Number(amountDollars) * 100);
+  if (!Number.isFinite(amountCents) || amountCents <= 0) {
+    return { success: false, message: "Invalid charge amount" };
+  }
+  try {
+    const paymentMethods = await stripe.paymentMethods.list({
+      customer: customerId,
+      type: "card",
+      limit: 5,
+    });
+    const pm = paymentMethods.data?.[0];
+    if (!pm) {
+      return {
+        success: false,
+        message: "No saved card on file for this company account",
+      };
+    }
+    const reqOpts = idempotencyKey ? { idempotencyKey } : undefined;
+    const paymentIntent = await stripe.paymentIntents.create(
+      {
+        amount: amountCents,
+        currency: "usd",
+        customer: customerId,
+        payment_method: pm.id,
+        capture_method: "automatic",
+        confirm: true,
+        off_session: true,
+        ...(description ? { description } : {}),
+        metadata: Object.fromEntries(
+          Object.entries(metadata || {}).map(([k, v]) => [k, String(v ?? "")]),
+        ),
+      },
+      reqOpts,
+    );
+    if (paymentIntent.status !== "succeeded") {
+      try {
+        if (!["succeeded", "canceled"].includes(paymentIntent.status)) {
+          await stripe.paymentIntents.cancel(paymentIntent.id);
+        }
+      } catch (_) {
+        /* ignore cancel race */
+      }
+      return {
+        success: false,
+        message: `Payment could not be completed automatically (status: ${paymentIntent.status})`,
+        paymentIntent,
+      };
+    }
+    return {
+      success: true,
+      paymentIntent,
+      paymentId: paymentIntent.id,
+      cardLast4: pm.card?.last4 || "",
+      cardBrand: pm.card?.brand || "",
+    };
+  } catch (error) {
+    logger.error("createOffSessionCharge failed", { error: error.message });
+    return {
+      success: false,
+      message: error.message || "Card payment failed",
+      code: error.code || error.raw?.code || "charge_failed",
+    };
+  }
+}
+
 export function getAddonFees({ driveaway = false, cancelation = false } = {}) {
   let addon = 0;
   if (driveaway) addon += DRIVEWAY_PROTECTION_FEE;

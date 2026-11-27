@@ -47,6 +47,12 @@ const notificationSchema = new mongoose.Schema({
       "provider_lead",
       "provider_estimate",
       "estimate_accepted",
+      // Builder Offer / Recurring Reminders & Billing Controls
+      "dispatch_reminder",
+      "extra_day_warning",
+      "pickup_payment_required",
+      "payment_failed",
+      "rotations_paused",
     ],
   },
   order: { type: mongoose.Schema.Types.ObjectId, ref: "Order" },

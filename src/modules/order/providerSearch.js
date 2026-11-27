@@ -4,6 +4,7 @@ import ProviderLead from "../../models/ProviderLead.js";
 import User from "../../models/User.js";
 import Dustbin from "../../models/Dustbin.js";
 import Dumbster from "../../models/Dumbster.js";
+import ProviderCustomer from "../../models/ProviderCustomer.js";
 
 const escapeRegex = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const LIMIT = 6;
@@ -151,8 +152,10 @@ export async function searchProviderRecords(providerId, rawQuery) {
     .lean();
   const matchingDumbsterIds = matchingDumbsters.map((d) => d._id);
 
-  // 3. Customers that match by name / email / phone / company
+  // 3. Customers that match by name / email / phone / company (exclude provider themselves & deleted users)
   const matchedUsers = await User.find({
+    _id: { $ne: pid },
+    status: { $ne: "deleted" },
     $or: [{ name: rx }, { email: rx }, { phone: rx }, { comp_name: rx }],
   })
     .select("_id name email phone comp_name company access_types profilePicture")
@@ -224,7 +227,7 @@ export async function searchProviderRecords(providerId, rawQuery) {
     dustbinOr.push({ status: "active" });
   }
 
-  const [orders, leads, estimates, dustbins, orderCustomerIds, leadCustomerIds] = await Promise.all([
+  const [orders, leads, estimates, dustbins, orderCustomerIds, leadCustomerIds, crmCustomerIds] = await Promise.all([
     Order.find({ to_id: pid, $or: orderOr })
       .select("_id orderNumber status service_type address price amount user dumbster createdAt")
       .populate({ path: "user", select: "name phone" })
@@ -265,9 +268,12 @@ export async function searchProviderRecords(providerId, rawQuery) {
     matchedUserIds.length
       ? ProviderLead.distinct("customer", { provider: pid, customer: { $in: matchedUserIds } })
       : [],
+    matchedUserIds.length
+      ? ProviderCustomer.distinct("customer", { provider: pid, customer: { $in: matchedUserIds } })
+      : [],
   ]);
 
-  const myCustomerIds = new Set([...orderCustomerIds, ...leadCustomerIds].map(String));
+  const myCustomerIds = new Set([...orderCustomerIds, ...leadCustomerIds, ...crmCustomerIds].map(String));
   const customers = matchedUsers
     .filter((u) => myCustomerIds.has(String(u._id)))
     .slice(0, LIMIT)
