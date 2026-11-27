@@ -963,8 +963,18 @@ export const initSocket = (server) => {
             resolvedServiceType === "Dumbster" ||
             resolvedServiceType === "Porta Potty"
           ) {
+            let effectiveCompanyId = null;
+            if (companyId && isValidObjectId(companyId)) {
+              const companyDoc = await Company.findById(companyId)
+                .select("status")
+                .lean();
+              if (companyDoc?.status === "approved") {
+                effectiveCompanyId = companyId;
+              }
+            }
+
             const { topTier, cascade: tierCascade } =
-              await resolveCompanyTopTier(companyId);
+              await resolveCompanyTopTier(effectiveCompanyId);
             const serviceQuery = buildServiceQueryForType({
               serviceType: resolvedServiceType,
               dumbsterId,
@@ -979,7 +989,7 @@ export const initSocket = (server) => {
               quantity: requestedQuantity,
               latitude: coords.latitude,
               longitude: coords.longitude,
-              companyId,
+              companyId: effectiveCompanyId,
               topTier,
               cascade: tierCascade,
               onlineOnly: false,
@@ -1221,8 +1231,10 @@ export const initSocket = (server) => {
           let commercialQuote = null;
           let companyPaymentMethod = null;
           let authoritativePrice = Number(price);
-          const resolvedCompanyId =
+          let resolvedCompanyId =
             companyId && isValidObjectId(companyId) ? companyId : null;
+          const requiresCommercialApproval =
+            Boolean(jobSiteId) || payment_type === "invoice";
 
           if (resolvedCompanyId) {
             commercialCompany =
@@ -1235,77 +1247,102 @@ export const initSocket = (server) => {
               });
             }
             if (commercialCompany.status !== "approved") {
-              return callback({
-                success: false,
-                title: "Company Pending",
-                message: "Commercial builder account is not approved yet.",
-              });
-            }
-            companyPaymentMethod = commercialCompany.paymentMethod || "card";
-
-            let dumpsterSizeHint = null;
-            if (dumbsterId && isValidObjectId(dumbsterId)) {
-              const selectedDumpster = await Dumbster.findById(dumbsterId)
-                .select("size")
-                .lean();
-              dumpsterSizeHint = normalizeCommercialSize(
-                selectedDumpster?.size,
-              );
-            }
-            const commercialSizeHint =
-              normalizeCommercialSize(size) ||
-              normalizeCommercialSize(metadata?.size) ||
-              dumpsterSizeHint;
-
-            // Quote when we have a commercial size or a job site (defaultSize).
-            // Otherwise treat as a normal dumpster booking under this account.
-            if (commercialSizeHint || jobSiteId) {
-              try {
-                commercialQuote = await quoteCommercialDumpster({
-                  companyId: resolvedCompanyId,
-                  jobSiteId,
-                  size: commercialSizeHint || undefined,
-                  numDays: num_days,
-                  quantity,
-                  dumbsterId,
-                  location,
-                  additionalTons: requestedAdditionalTons,
-                });
-                const explicitAddonFees = getAddonFees({
-                  driveaway:
-                    Boolean(driveaway) && Number(driveaway_insurance) > 0,
-                  cancelation:
-                    Boolean(cancelation) && Number(insurance_protection) > 0,
-                });
-                authoritativePrice =
-                  Math.round(
-                    (Number(commercialQuote.price) + explicitAddonFees) * 100,
-                  ) / 100;
-              } catch (quoteErr) {
+              if (requiresCommercialApproval) {
                 return callback({
                   success: false,
-                  title: "Quote Error",
-                  message:
-                    quoteErr.message || "Failed to calculate commercial price.",
+                  title: "Company Pending",
+                  message: "Commercial builder account is not approved yet.",
                 });
               }
+              // Unapproved companies keep standard rentee checkout unlocked
+              // and fall back cleanly to consumer Card/Wallet pricing and matching.
+              commercialCompany = null;
+              resolvedCompanyId = null;
             } else {
-              logger.info("send-request-rentee.consumer_under_company", {
-                companyId: resolvedCompanyId,
-                dumbsterId: dumbsterId || null,
-                reason: "no_commercial_size",
-              });
+              companyPaymentMethod = commercialCompany.paymentMethod || "card";
+              const explicitCommercialRequest =
+                requiresCommercialApproval ||
+                Boolean(normalizeCommercialSize(size)) ||
+                Boolean(normalizeCommercialSize(metadata?.size)) ||
+                (!paymentId && payment_type !== "wallet");
+
+              let dumpsterSizeHint = null;
+              if (
+                explicitCommercialRequest &&
+                dumbsterId &&
+                isValidObjectId(dumbsterId)
+              ) {
+                const selectedDumpster = await Dumbster.findById(dumbsterId)
+                  .select("size")
+                  .lean();
+                dumpsterSizeHint = normalizeCommercialSize(
+                  selectedDumpster?.size,
+                );
+              }
+              const commercialSizeHint =
+                normalizeCommercialSize(size) ||
+                normalizeCommercialSize(metadata?.size) ||
+                dumpsterSizeHint;
+
+              // Quote when an explicit commercial workflow (job site, size, or
+              // invoice) is requested. Simple catalog card/wallet bookings
+              // preserve the client-authorized price.
+              if (
+                explicitCommercialRequest &&
+                (commercialSizeHint || jobSiteId)
+              ) {
+                try {
+                  commercialQuote = await quoteCommercialDumpster({
+                    companyId: resolvedCompanyId,
+                    jobSiteId,
+                    size: commercialSizeHint || undefined,
+                    numDays: num_days,
+                    quantity,
+                    dumbsterId,
+                    location,
+                    additionalTons: requestedAdditionalTons,
+                  });
+                  const explicitAddonFees = getAddonFees({
+                    driveaway:
+                      Boolean(driveaway) && Number(driveaway_insurance) > 0,
+                    cancelation:
+                      Boolean(cancelation) && Number(insurance_protection) > 0,
+                  });
+                  authoritativePrice =
+                    Math.round(
+                      (Number(commercialQuote.price) + explicitAddonFees) * 100,
+                    ) / 100;
+                } catch (quoteErr) {
+                  return callback({
+                    success: false,
+                    title: "Quote Error",
+                    message:
+                      quoteErr.message ||
+                      "Failed to calculate commercial price.",
+                  });
+                }
+              } else {
+                logger.info("send-request-rentee.consumer_under_company", {
+                  companyId: resolvedCompanyId,
+                  dumbsterId: dumbsterId || null,
+                  reason: explicitCommercialRequest
+                    ? "no_commercial_size"
+                    : "catalog_checkout",
+                });
+              }
             }
           }
 
           let resolvedPaymentType =
             payment_type === "wallet" ? "wallet" : "stripe";
-          // Invoice only for true commercial quotes (not consumer dumpsters
-          // booked while a companyId happens to be on the payload).
+          // Invoice only for true commercial quotes when the caller has not
+          // already submitted a wallet or Stripe payment hold.
           if (
             resolvedCompanyId &&
             companyPaymentMethod === "invoice" &&
-            commercialQuote
+            commercialQuote &&
+            payment_type !== "wallet" &&
+            !paymentId
           ) {
             resolvedPaymentType = "invoice";
           }
