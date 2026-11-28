@@ -29,15 +29,15 @@ const generateRandomString = (length = 10) => {
   return result;
 };
 
+const USER_INFO_POPULATE = [
+  { path: "junkRemoval", select: "status COI address location" },
+  { path: "treeRemoval", select: "status address location" },
+  { path: "company" },
+];
+
 export async function userinfo(userId) {
   let user = await User.findById(userId)
-    .populate([
-      { path: "junkRemoval", select: "status COI" },
-      { path: "treeRemoval", select: "status" },
-      {
-        path: "company",
-      },
-    ])
+    .populate(USER_INFO_POPULATE)
     .select("-password")
     .lean();
   if (!user) throw new BadRequestError("User not found");
@@ -68,6 +68,7 @@ export async function userinfo(userId) {
       },
       { new: true },
     )
+      .populate(USER_INFO_POPULATE)
       .select("-password")
       .lean();
   }
@@ -364,6 +365,7 @@ export async function updateUser(userId, updates = {}) {
     );
   }
 
+  await user.populate(USER_INFO_POPULATE);
   return user;
 }
 
